@@ -1,1 +1,62 @@
+# Xcode
+build/
+*.xcworkspace
+!default.xcworkspace
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Build generated
+build/
+Build/
+
+# Various settings
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
+
+# Obj-C/Swift specific
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# CocoaPods
+Pods/
+*.podspec
+
+# Carthage
+Carthage/Build
+
+# fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output
+
+# Code Injection
+iOSInjectionProject/
+
+# Firebase
+GoogleService-Info.plist
+
+# macOS
 .DS_Store
+
+# Swift Package Manager
+.swiftpm/
+Package.resolved
+
+# SourcePackages (Firebase dependencies)
+build/SourcePackages/
