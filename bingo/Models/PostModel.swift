@@ -1,7 +1,7 @@
 import Foundation
 import FirebaseFirestore
 
-struct PostModel: Identifiable, Codable {
+struct PostModel: Identifiable, Codable, Equatable {
     @DocumentID var id: String?
     let authorId: String
     let authorName: String

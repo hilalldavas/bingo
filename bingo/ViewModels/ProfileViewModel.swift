@@ -105,6 +105,10 @@ class ProfileViewModel: ObservableObject {
         }
     }
     
+    func refreshUserPosts() {
+        loadUserPosts()
+    }
+    
     func refreshProfile() {
         loadCurrentUserProfile()
     }

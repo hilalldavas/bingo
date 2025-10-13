@@ -5,10 +5,14 @@ import FirebaseAuth
 class AuthViewModel: ObservableObject {
     @Published var email = ""
     @Published var password = ""
+    @Published var fullName = ""
+    @Published var username = ""
     @Published var errorMessage = ""
     @Published var infoMessage = ""
     @Published var isLoggedIn = false
     @Published var showVerificationScreen = false
+    @Published var isCheckingUsername = false
+    @Published var usernameMessage = ""
 
     // Email ve şifre realtime kontrol
     var emailMessage: String? {
@@ -34,6 +38,22 @@ class AuthViewModel: ObservableObject {
 
         if let passwordErr = passwordMessage, passwordErr != "Şifre güçlü ✅" {
             self.errorMessage = passwordErr
+            return
+        }
+        
+        // Check username message for errors
+        if !usernameMessage.isEmpty && !usernameMessage.contains("✅") {
+            self.errorMessage = usernameMessage
+            return
+        }
+        
+        if username.isEmpty {
+            self.errorMessage = "Kullanıcı adı gerekli"
+            return
+        }
+        
+        if fullName.isEmpty {
+            self.errorMessage = "Ad ve soyad gerekli"
             return
         }
 
@@ -72,6 +92,10 @@ class AuthViewModel: ObservableObject {
 
                 if user.isEmailVerified {
                     self?.isLoggedIn = true
+                    self?.errorMessage = ""
+                    self?.showVerificationScreen = false
+                    // Kullanıcı giriş yaptığında profil oluştur
+                    self?.createUserProfileIfNeeded()
                 } else {
                     self?.errorMessage = "Email doğrulanmadı. Lütfen mailinizi kontrol edin ve linke tıklayın."
                     self?.showVerificationScreen = true
@@ -80,6 +104,72 @@ class AuthViewModel: ObservableObject {
         }
     }
 
+    private func createUserProfileIfNeeded() {
+        guard let currentUser = Auth.auth().currentUser else { return }
+        
+        // Kullanıcı profili var mı kontrol et
+        SocialMediaService.shared.fetchUserProfile(userId: currentUser.uid) { result in
+            switch result {
+            case .success(let profile):
+                if profile == nil {
+                    // Profil yoksa oluştur - kayıt ol sırasında girilen bilgileri kullan
+                    let email = currentUser.email ?? "kullanici@example.com"
+                    let userFullName = self.fullName.isEmpty == false ? self.fullName : "Kullanıcı"
+                    let userUsername = self.username.isEmpty == false ? self.username : "kullanici_\(currentUser.uid.prefix(8))"
+                    
+                    let defaultProfile = UserProfileModel(
+                        email: email,
+                        username: userUsername,
+                        fullName: userFullName,
+                        bio: "Bingo Social'da yeni bir yolculuğa başladım! 🎯",
+                        profileImageURL: "https://ui-avatars.com/api/?name=\(userFullName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "User")&background=random&color=fff&size=200"
+                    )
+                    
+                    var newProfile = defaultProfile
+                    newProfile.id = currentUser.uid
+                    
+                    SocialMediaService.shared.createUserProfile(userProfile: newProfile) { result in
+                        switch result {
+                        case .success:
+                            print("DEBUG: Varsayılan profil başarıyla oluşturuldu")
+                        case .failure(let error):
+                            print("DEBUG: Profil oluşturma hatası: \(error.localizedDescription)")
+                        }
+                    }
+                } else {
+                    print("DEBUG: Kullanıcı profili zaten mevcut")
+                }
+            case .failure(let error):
+                print("DEBUG: Profil kontrolü hatası: \(error.localizedDescription)")
+                
+                // Hata durumunda da varsayılan profil oluşturmayı dene
+                let email = currentUser.email ?? "kullanici@example.com"
+                let userFullName = self.fullName.isEmpty == false ? self.fullName : "Kullanıcı"
+                let userUsername = self.username.isEmpty == false ? self.username : "kullanici_\(currentUser.uid.prefix(8))"
+                
+                let defaultProfile = UserProfileModel(
+                    email: email,
+                    username: userUsername,
+                    fullName: userFullName,
+                    bio: "Bingo Social'da yeni bir yolculuğa başladım! 🎯",
+                    profileImageURL: "https://ui-avatars.com/api/?name=\(userFullName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "User")&background=random&color=fff&size=200"
+                )
+                
+                var newProfile = defaultProfile
+                newProfile.id = currentUser.uid
+                
+                SocialMediaService.shared.createUserProfile(userProfile: newProfile) { result in
+                    switch result {
+                    case .success:
+                        print("DEBUG: Varsayılan profil başarıyla oluşturuldu (fallback)")
+                    case .failure(let error):
+                        print("DEBUG: Profil oluşturma hatası (fallback): \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
+    }
+    
     func logout() {
         do {
             try Auth.auth().signOut()
@@ -87,8 +177,12 @@ class AuthViewModel: ObservableObject {
             self.showVerificationScreen = false
             self.email = ""
             self.password = ""
+            self.fullName = ""
+            self.username = ""
             self.errorMessage = ""
             self.infoMessage = ""
+            self.isCheckingUsername = false
+            self.usernameMessage = ""
         } catch {
             self.errorMessage = error.localizedDescription
         }

@@ -180,7 +180,9 @@ struct ProfileView: View {
                                 
                                 LazyVStack(spacing: 15) {
                                     ForEach(profileViewModel.posts) { post in
-                                        PostCardView(post: post)
+                                        PostCardView(post: post, onRefresh: {
+                                            profileViewModel.refreshUserPosts()
+                                        })
                                     }
                                 }
                                 .padding(.horizontal)

@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct LoginView: View {
-    @StateObject private var vm = AuthViewModel()
+    @EnvironmentObject var vm: AuthViewModel
     @State private var showSignup = false
     
     var body: some View {
@@ -82,6 +82,7 @@ struct LoginView: View {
         }
         .fullScreenCover(isPresented: $showSignup) {
             SignupView(showSignup: $showSignup)
+                .environmentObject(vm)
         }
     }
 }

@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SignupView: View {
-    @ObservedObject var vm = AuthViewModel()
+    @EnvironmentObject var vm: AuthViewModel
     @Binding var showSignup: Bool
     
     var body: some View {
@@ -18,6 +18,52 @@ struct SignupView: View {
                     .padding(.bottom, 40)
                 
                 VStack(spacing: 18) {
+                    // Ad Soyad
+                    HStack {
+                        Image(systemName: "person.fill")
+                            .foregroundColor(.white.opacity(0.8))
+                        TextField("Ad Soyad", text: $vm.fullName)
+                            .autocapitalization(.words)
+                            .textFieldStyle(.plain)
+                            .foregroundColor(.white)
+                    }
+                    .padding()
+                    .background(.white.opacity(0.15))
+                    .cornerRadius(12)
+                    
+                    // Kullanıcı Adı
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Image(systemName: "at")
+                                .foregroundColor(.white.opacity(0.8))
+                            TextField("Kullanıcı Adı", text: $vm.username)
+                                .autocapitalization(.none)
+                                .textFieldStyle(.plain)
+                                .foregroundColor(.white)
+                                .onChange(of: vm.username) {
+                                    checkUsernameAvailability()
+                                }
+                            
+                            if vm.isCheckingUsername {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            }
+                        }
+                        .padding()
+                        .background(.white.opacity(0.15))
+                        .cornerRadius(12)
+                        
+                        // Username validation message
+                        if !vm.usernameMessage.isEmpty {
+                            Text(vm.usernameMessage)
+                                .font(.caption)
+                                .foregroundColor(vm.usernameMessage.contains("✅") ? .green : .red)
+                                .padding(.horizontal, 8)
+                        }
+                    }
+                    
+                    // E-posta
                     HStack {
                         Image(systemName: "envelope.fill")
                             .foregroundColor(.white.opacity(0.8))
@@ -30,6 +76,7 @@ struct SignupView: View {
                     .background(.white.opacity(0.15))
                     .cornerRadius(12)
                     
+                    // Şifre
                     HStack {
                         Image(systemName: "lock.fill")
                             .foregroundColor(.white.opacity(0.8))
@@ -75,6 +122,55 @@ struct SignupView: View {
                 .padding(.top, 10)
             }
             .padding(.horizontal, 30)
+        }
+    }
+    
+    private func checkUsernameAvailability() {
+        // Debounce the API call
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            // Eğer kullanıcı adı çok kısa veya boşsa mesajı temizle
+            if vm.username.count < 3 {
+                vm.usernameMessage = ""
+                return
+            }
+            
+            // Eğer boşluk varsa hata göster
+            if vm.username.contains(" ") {
+                vm.usernameMessage = "❌ Kullanıcı adında boşluk olamaz"
+                return
+            }
+            
+            // Format kontrolü
+            let regex = "^[a-zA-Z0-9._-]+$"
+            if !NSPredicate(format: "SELF MATCHES %@", regex).evaluate(with: vm.username) {
+                vm.usernameMessage = "❌ Sadece harf, rakam, nokta, tire ve alt çizgi kullanılabilir"
+                return
+            }
+            
+            // Firebase'de kullanıcı adı kontrolü - kayıt ol sırasında henüz kullanıcı yok
+            vm.isCheckingUsername = true
+            vm.usernameMessage = "Kontrol ediliyor..."
+            
+            print("DEBUG: SignUpView - Username kontrolü başlatılıyor: '\(vm.username)'")
+            
+            SocialMediaService.shared.checkUsernameAvailability(username: vm.username, currentUserId: "") { result in
+                DispatchQueue.main.async {
+                    vm.isCheckingUsername = false
+                    switch result {
+                    case .success(let isAvailable):
+                        print("DEBUG: SignUpView - Username kontrol sonucu: \(isAvailable)")
+                        if isAvailable {
+                            vm.usernameMessage = "✅ Bu kullanıcı adı kullanılabilir"
+                        } else {
+                            vm.usernameMessage = "❌ Bu kullanıcı adı zaten alınmış"
+                        }
+                    case .failure(let error):
+                        print("DEBUG: SignUpView - Username kontrol hatası: \(error.localizedDescription)")
+                        print("DEBUG: SignUpView - Hata detayı: \(error)")
+                        vm.usernameMessage = "❌ Kontrol edilemedi: \(error.localizedDescription)"
+                    }
+                }
+            }
         }
     }
 }

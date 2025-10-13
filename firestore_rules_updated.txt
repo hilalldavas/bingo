@@ -1,0 +1,29 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Users collection - kullanıcılar kendi profillerini okuyup yazabilir
+    // whereField sorguları için genişletilmiş izinler
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      // Username kontrolü için whereField sorgularına izin ver
+      allow read: if request.auth != null;
+    }
+    
+    // Posts collection - giriş yapmış kullanıcılar okuyup yazabilir
+    match /posts/{postId} {
+      allow read, write: if request.auth != null;
+      
+      // Post comments
+      match /comments/{commentId} {
+        allow read, write: if request.auth != null;
+      }
+      
+      // Post likes
+      match /likes/{likeId} {
+        allow read, write: if request.auth != null;
+      }
+    }
+  }
+}
+
+

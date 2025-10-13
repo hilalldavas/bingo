@@ -84,7 +84,9 @@ struct FeedView: View {
                         ScrollView {
                             LazyVStack(spacing: 15) {
                                 ForEach(posts) { post in
-                                    PostCardView(post: post)
+                                    PostCardView(post: post, onRefresh: {
+                                        loadPosts()
+                                    })
                                         .padding(.horizontal)
                                 }
                             }
@@ -102,6 +104,19 @@ struct FeedView: View {
         }
         .onAppear {
             loadPosts()
+            // Ensure current user has a profile
+            if let currentUser = Auth.auth().currentUser {
+                SocialMediaService.shared.ensureUserProfileExists(userId: currentUser.uid) { result in
+                    switch result {
+                    case .success(let profile):
+                        if let profile = profile {
+                            print("DEBUG: Kullanıcı profili mevcut: \(profile.fullName)")
+                        }
+                    case .failure(let error):
+                        print("DEBUG: Profil kontrol hatası: \(error.localizedDescription)")
+                    }
+                }
+            }
         }
         .refreshable {
             loadPosts()
@@ -117,20 +132,58 @@ struct FeedView: View {
                 isLoading = false
                 switch result {
                 case .success(let fetchedPosts):
-                    posts = fetchedPosts
+                    // Update existing posts instead of replacing the entire array
+                    updatePostsWithNewData(fetchedPosts)
                 case .failure(let error):
                     errorMessage = error.localizedDescription
                 }
             }
         }
     }
+    
+    private func updatePostsWithNewData(_ newPosts: [PostModel]) {
+        // If posts array is empty, just set the new posts
+        if posts.isEmpty {
+            posts = newPosts
+            return
+        }
+        
+        // Update existing posts with new data
+        for (index, existingPost) in posts.enumerated() {
+            if let newPost = newPosts.first(where: { $0.id == existingPost.id }) {
+                posts[index] = newPost
+            }
+        }
+        
+        // Add any new posts that don't exist in the current array
+        for newPost in newPosts {
+            if !posts.contains(where: { $0.id == newPost.id }) {
+                posts.append(newPost)
+            }
+        }
+        
+        // Remove posts that no longer exist
+        posts.removeAll { existingPost in
+            !newPosts.contains(where: { $0.id == existingPost.id })
+        }
+        
+        // Sort posts by timestamp
+        posts.sort { $0.timestamp > $1.timestamp }
+    }
 }
 
 struct PostCardView: View {
     let post: PostModel
+    let onRefresh: (() -> Void)?
     @State private var isLiked = false
     @State private var likeCount = 0
+    @State private var commentCount = 0
     @State private var showComments = false
+    
+    init(post: PostModel, onRefresh: (() -> Void)? = nil) {
+        self.post = post
+        self.onRefresh = onRefresh
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -222,7 +275,7 @@ struct PostCardView: View {
                             .foregroundColor(.secondary)
                             .font(.title3)
                         
-                        Text("\(post.comments)")
+                        Text("\(commentCount)")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
@@ -245,27 +298,56 @@ struct PostCardView: View {
         .onAppear {
             isLiked = post.isLikedByUser
             likeCount = post.likes
+            commentCount = post.comments
+        }
+        .onChange(of: post.isLikedByUser) { newValue in
+            isLiked = newValue
+        }
+        .onChange(of: post.likes) { newValue in
+            likeCount = newValue
+        }
+        .onChange(of: post.comments) { newValue in
+            commentCount = newValue
         }
         .sheet(isPresented: $showComments) {
-            CommentsView(postId: post.id ?? "")
+            CommentsView(postId: post.id ?? "") {
+                // Hemen yorum sayısını artır
+                commentCount += 1
+                // Sonra parent view'ı da güncelle
+                onRefresh?()
+            }
         }
     }
     
     private func toggleLike() {
         guard let postId = post.id else { return }
         
+        print("DEBUG: toggleLike çağrıldı - PostID: \(postId), Mevcut durum: isLiked=\(isLiked), likeCount=\(likeCount)")
+        
+        let originalLiked = isLiked
+        let originalCount = likeCount
+        
+        // Optimistic update
         isLiked.toggle()
         likeCount += isLiked ? 1 : -1
+        
+        print("DEBUG: Optimistic update - isLiked: \(isLiked), likeCount: \(likeCount)")
         
         SocialMediaService.shared.likePost(postId: postId) { result in
             DispatchQueue.main.async {
                 switch result {
-                case .failure:
+                case .failure(let error):
+                    print("DEBUG: Like işlemi başarısız - \(error.localizedDescription)")
                     // Revert on error
-                    isLiked.toggle()
-                    likeCount += isLiked ? 1 : -1
-                case .success:
-                    break
+                    isLiked = originalLiked
+                    likeCount = originalCount
+                case .success(let updatedPost):
+                    print("DEBUG: Like işlemi başarılı - likes: \(updatedPost.likes), isLiked: \(updatedPost.isLikedByUser)")
+                    // Update with real data from server
+                    isLiked = updatedPost.isLikedByUser
+                    likeCount = updatedPost.likes
+                    // Also refresh parent view to update other instances
+                    onRefresh?()
                 }
             }
         }

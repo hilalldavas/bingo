@@ -8,7 +8,15 @@ struct CommentsView: View {
     @State private var newComment = ""
     @State private var isLoading = false
     @State private var errorMessage = ""
+    @State private var commentCount = 0
     @Environment(\.dismiss) private var dismiss
+    
+    let onCommentAdded: (() -> Void)?
+    
+    init(postId: String, onCommentAdded: (() -> Void)? = nil) {
+        self.postId = postId
+        self.onCommentAdded = onCommentAdded
+    }
     
     var body: some View {
         NavigationView {
@@ -141,14 +149,29 @@ struct CommentsView: View {
         let commentText = newComment
         newComment = ""
         
+        // Optimistic update - hemen yorumu ekle
+        let tempComment = CommentModel(
+            postId: postId,
+            authorId: Auth.auth().currentUser?.uid ?? "",
+            authorName: "Sen", // Geçici olarak "Sen" göster
+            authorProfileImage: nil,
+            content: commentText
+        )
+        comments.append(tempComment)
+        onCommentAdded?() // Hemen parent view'ı güncelle
+        
         socialService.addComment(postId: postId, content: commentText) { result in
             DispatchQueue.main.async {
                 switch result {
                 case .success:
-                    loadComments() // Reload comments
+                    loadComments() // Reload comments with real data
+                    onCommentAdded?() // Notify parent view to refresh
                 case .failure(let error):
+                    // Remove the temporary comment on error
+                    comments.removeAll { $0.content == commentText }
                     errorMessage = error.localizedDescription
                     newComment = commentText // Restore comment text on error
+                    onCommentAdded?() // Notify parent view to refresh
                 }
             }
         }

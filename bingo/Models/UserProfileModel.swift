@@ -41,10 +41,13 @@ struct UserProfileModel: Identifiable, Codable {
     }
     
     static func from(dict: [String: Any], id: String) -> UserProfileModel? {
+        print("DEBUG: UserProfileModel.from çağrıldı - Dict: \(dict)")
         guard let email = dict["email"] as? String,
               let username = dict["username"] as? String,
               let fullName = dict["fullName"] as? String,
               let timestamp = dict["timestamp"] as? Timestamp else {
+            print("DEBUG: UserProfileModel.from - Required fields missing")
+            print("DEBUG: email: \(dict["email"]), username: \(dict["username"]), fullName: \(dict["fullName"]), timestamp: \(dict["timestamp"])")
             return nil
         }
         
