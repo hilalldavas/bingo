@@ -1,5 +1,6 @@
 import SwiftUI
 import FirebaseAuth
+import PhotosUI
 
 struct EditProfileView: View {
     let profile: UserProfileModel?
@@ -13,6 +14,9 @@ struct EditProfileView: View {
     @State private var errorMessage = ""
     @State private var usernameMessage = ""
     @State private var originalUsername = ""
+    @State private var selectedImage: UIImage?
+    @State private var showingPhotoPicker = false
+    @State private var isUploadingImage = false
     
     @Environment(\.dismiss) private var dismiss
     
@@ -23,24 +27,72 @@ struct EditProfileView: View {
             VStack(spacing: 20) {
                 // Profile Picture Section
                 VStack(spacing: 15) {
-                    Circle()
-                        .fill(LinearGradient(
-                            colors: [.purple.opacity(0.3), .blue.opacity(0.3)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ))
-                        .frame(width: 100, height: 100)
-                        .overlay(
-                            Image(systemName: "person.fill")
-                                .foregroundColor(.white)
-                                .font(.system(size: 40))
-                        )
-                    
-                    Button("Profil Fotoğrafı Değiştir") {
-                        // TODO: Implement photo picker
+                    ZStack {
+                        if let selectedImage = selectedImage {
+                            // Yeni seçilen resim
+                            Image(uiImage: selectedImage)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 100, height: 100)
+                                .clipShape(Circle())
+                        } else if let profileImageURL = profile?.profileImageURL, !profileImageURL.isEmpty {
+                            // Mevcut profil fotoğrafı
+                            AsyncImage(url: URL(string: profileImageURL)) { image in
+                                image
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                            } placeholder: {
+                                Circle()
+                                    .fill(LinearGradient(
+                                        colors: [.purple.opacity(0.3), .blue.opacity(0.3)],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    ))
+                                    .overlay(
+                                        ProgressView()
+                                    )
+                            }
+                            .frame(width: 100, height: 100)
+                            .clipShape(Circle())
+                        } else {
+                            // Varsayılan avatar
+                            Circle()
+                                .fill(LinearGradient(
+                                    colors: [.purple.opacity(0.3), .blue.opacity(0.3)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ))
+                                .frame(width: 100, height: 100)
+                                .overlay(
+                                    Image(systemName: "person.fill")
+                                        .foregroundColor(.white)
+                                        .font(.system(size: 40))
+                                )
+                        }
+                        
+                        // Yükleniyor göstergesi
+                        if isUploadingImage {
+                            Circle()
+                                .fill(Color.black.opacity(0.5))
+                                .frame(width: 100, height: 100)
+                                .overlay(
+                                    ProgressView()
+                                        .tint(.white)
+                                )
+                        }
                     }
-                    .font(.caption)
-                    .foregroundColor(.blue)
+                    
+                    Button(action: {
+                        showingPhotoPicker = true
+                    }) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "camera.fill")
+                            Text("Profil Fotoğrafı Değiştir")
+                        }
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                    }
+                    .disabled(isUploadingImage)
                 }
                 .padding(.top)
                 
@@ -132,6 +184,14 @@ struct EditProfileView: View {
             .onAppear {
                 loadCurrentProfile()
             }
+            .photosPicker(isPresented: $showingPhotoPicker, selection: Binding<PhotosPickerItem?>(
+                get: { nil },
+                set: { item in
+                    if let item = item {
+                        loadImage(from: item)
+                    }
+                }
+            ))
         }
     }
     
@@ -208,21 +268,73 @@ struct EditProfileView: View {
             return
         }
         
+        guard let currentUser = Auth.auth().currentUser else {
+            errorMessage = "Kullanıcı giriş yapmamış"
+            isLoading = false
+            return
+        }
+        
+        // Eğer yeni resim seçildiyse, önce resmi yükle
+        if let newImage = selectedImage {
+            isUploadingImage = true
+            socialMediaService.uploadProfileImage(newImage, userId: currentUser.uid) { [self] result in
+                DispatchQueue.main.async {
+                    isUploadingImage = false
+                    switch result {
+                    case .success(let imageURL):
+                        // Resim yüklendi, profil verisini güncelle
+                        updatedProfile.profileImageURL = imageURL
+                        updateProfileData(updatedProfile)
+                    case .failure(let error):
+                        errorMessage = "Resim yüklenirken hata oluştu: \(error.localizedDescription)"
+                        isLoading = false
+                    }
+                }
+            }
+        } else {
+            // Resim yoksa direkt profil verisini güncelle
+            updateProfileData(updatedProfile)
+        }
+    }
+    
+    private func updateProfileData(_ updatedProfile: UserProfileModel) {
+        var profile = updatedProfile
+        
         // Update profile data
-        updatedProfile.fullName = fullName
-        updatedProfile.username = username
-        updatedProfile.bio = bio
+        profile.fullName = fullName
+        profile.username = username
+        profile.bio = bio
+        
+        print("DEBUG: updateProfileData - Profil güncelleniyor: \(profile.profileImageURL ?? "nil")")
         
         // Update in Firebase
-        socialMediaService.updateUserProfile(userProfile: updatedProfile) { result in
+        socialMediaService.updateUserProfile(userProfile: profile) { result in
             DispatchQueue.main.async {
                 isLoading = false
                 switch result {
                 case .success:
-                    onSave(updatedProfile)
+                    onSave(profile)
                     dismiss()
                 case .failure(let error):
                     errorMessage = "Profil güncellenirken hata oluştu: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    private func loadImage(from item: PhotosPickerItem) {
+        item.loadTransferable(type: Data.self) { result in
+            switch result {
+            case .success(let data):
+                if let data = data, let image = UIImage(data: data) {
+                    DispatchQueue.main.async {
+                        self.selectedImage = image
+                    }
+                }
+            case .failure(let error):
+                print("DEBUG: EditProfileView - Resim yükleme hatası: \(error)")
+                DispatchQueue.main.async {
+                    errorMessage = "Resim yüklenirken hata oluştu"
                 }
             }
         }

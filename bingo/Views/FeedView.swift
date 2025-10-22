@@ -98,8 +98,8 @@ struct FeedView: View {
             .navigationBarHidden(true)
         }
         .sheet(isPresented: $showCreatePost) {
-            CreatePostView(onPostCreated: {
-                loadPosts()
+            CreatePostView(onPostCreated: { newPost in
+                addNewPost(newPost)
             })
         }
         .onAppear {
@@ -142,33 +142,13 @@ struct FeedView: View {
     }
     
     private func updatePostsWithNewData(_ newPosts: [PostModel]) {
-        // If posts array is empty, just set the new posts
-        if posts.isEmpty {
-            posts = newPosts
-            return
-        }
-        
-        // Update existing posts with new data
-        for (index, existingPost) in posts.enumerated() {
-            if let newPost = newPosts.first(where: { $0.id == existingPost.id }) {
-                posts[index] = newPost
-            }
-        }
-        
-        // Add any new posts that don't exist in the current array
-        for newPost in newPosts {
-            if !posts.contains(where: { $0.id == newPost.id }) {
-                posts.append(newPost)
-            }
-        }
-        
-        // Remove posts that no longer exist
-        posts.removeAll { existingPost in
-            !newPosts.contains(where: { $0.id == existingPost.id })
-        }
-        
-        // Sort posts by timestamp
-        posts.sort { $0.timestamp > $1.timestamp }
+        // Basit yaklaşım: Yeni postları direkt kullan, duplicate'ları önlemek için
+        posts = newPosts
+    }
+    
+    func addNewPost(_ post: PostModel) {
+        // Yeni post'u en üste ekle
+        posts.insert(post, at: 0)
     }
 }
 

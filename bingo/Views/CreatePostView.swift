@@ -11,7 +11,7 @@ struct CreatePostView: View {
     @State private var isPosting = false
     @State private var errorMessage = ""
     
-    let onPostCreated: () -> Void
+    let onPostCreated: (PostModel) -> Void
     
     var body: some View {
         NavigationView {
@@ -80,7 +80,7 @@ struct CreatePostView: View {
                             .font(.body)
                             .lineLimit(10...15)
                         
-                        // Image preview - Geçici olarak devre dışı
+                        // Image preview
                         if let selectedImage = selectedImage {
                             ZStack(alignment: .topTrailing) {
                                 Image(uiImage: selectedImage)
@@ -100,14 +100,6 @@ struct CreatePostView: View {
                                         .padding(8)
                                 }
                             }
-                        }
-                        
-                        // Geçici uyarı mesajı
-                        if selectedImage != nil {
-                            Text("⚠️ Resim yükleme özelliği henüz aktif değil")
-                                .font(.caption)
-                                .foregroundColor(.orange)
-                                .padding(.horizontal)
                         }
                         
                         Spacer(minLength: 100)
@@ -206,8 +198,8 @@ struct CreatePostView: View {
                 isPosting = false
                 
                 switch result {
-                case .success:
-                    onPostCreated()
+                case .success(let newPost):
+                    onPostCreated(newPost)
                     dismiss()
                 case .failure(let error):
                     errorMessage = error.localizedDescription
@@ -270,5 +262,5 @@ struct ImagePicker: UIViewControllerRepresentable {
 }
 
 #Preview {
-    CreatePostView(onPostCreated: {})
+    CreatePostView(onPostCreated: { _ in })
 }

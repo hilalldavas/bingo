@@ -1,6 +1,7 @@
 import SwiftUI
 import FirebaseCore
 import FirebaseAuth
+import FirebaseStorage
 
 @main
 struct bingoApp: App {
@@ -24,9 +25,18 @@ struct bingoApp: App {
                 }
             }
             .onAppear {
+                print("DEBUG: App başlatıldı - Kullanıcı kontrolü yapılıyor")
                 // Check if user is already logged in
-                if let user = FirebaseAuth.Auth.auth().currentUser, user.isEmailVerified {
-                    authViewModel.isLoggedIn = true
+                if let user = Auth.auth().currentUser {
+                    print("DEBUG: Mevcut kullanıcı bulundu: \(user.email ?? "email yok")")
+                    print("DEBUG: Email doğrulandı mı: \(user.isEmailVerified)")
+                    if user.isEmailVerified {
+                        authViewModel.isLoggedIn = true
+                    } else {
+                        print("DEBUG: Email doğrulanmamış, giriş ekranına yönlendiriliyor")
+                    }
+                } else {
+                    print("DEBUG: Mevcut kullanıcı bulunamadı, giriş ekranı gösteriliyor")
                 }
             }
         }

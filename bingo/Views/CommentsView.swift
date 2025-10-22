@@ -46,7 +46,7 @@ struct CommentsView: View {
                 
                 Divider()
                 
-                // Comments list
+                // Comments list with proper spacing
                 if isLoading {
                     Spacer()
                     ProgressView("Yükleniyor...")
@@ -70,20 +70,35 @@ struct CommentsView: View {
                     }
                     Spacer()
                 } else {
-                    ScrollView {
-                        LazyVStack(spacing: 15) {
-                            ForEach(comments) { comment in
-                                CommentRowView(comment: comment)
-                                    .padding(.horizontal)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(spacing: 12) {
+                                ForEach(comments) { comment in
+                                    CommentRowView(comment: comment)
+                                        .padding(.horizontal)
+                                        .id(comment.id)
+                                }
+                                
+                                // Bottom padding to prevent overlap with input
+                                Color.clear
+                                    .frame(height: 20)
+                            }
+                            .padding(.top, 10)
+                        }
+                        .onChange(of: comments.count) { _ in
+                            // Auto-scroll to bottom when new comment is added
+                            if let lastComment = comments.last {
+                                withAnimation(.easeInOut(duration: 0.3)) {
+                                    proxy.scrollTo(lastComment.id, anchor: .bottom)
+                                }
                             }
                         }
-                        .padding(.top, 10)
                     }
                 }
                 
                 Divider()
                 
-                // Comment input
+                // Fixed comment input at bottom
                 HStack(spacing: 12) {
                     Circle()
                         .fill(LinearGradient(
@@ -100,6 +115,11 @@ struct CommentsView: View {
                     
                     TextField("Yorum yap...", text: $newComment)
                         .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .onSubmit {
+                            if !newComment.isEmpty {
+                                addComment()
+                            }
+                        }
                     
                     Button(action: {
                         addComment()
@@ -111,7 +131,10 @@ struct CommentsView: View {
                     .disabled(newComment.isEmpty)
                 }
                 .padding()
-                .background(Color(.systemBackground))
+                .background(
+                    Color(.systemBackground)
+                        .shadow(color: .black.opacity(0.1), radius: 1, x: 0, y: -1)
+                )
             }
         }
         .navigationBarHidden(true)
@@ -182,7 +205,7 @@ struct CommentRowView: View {
     let comment: CommentModel
     
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: 10) {
             AsyncImage(url: URL(string: comment.authorProfileImage ?? "")) { image in
                 image
                     .resizable()
@@ -200,32 +223,38 @@ struct CommentRowView: View {
                             .font(.caption)
                     )
             }
-            .frame(width: 35, height: 35)
+            .frame(width: 32, height: 32)
             .clipShape(Circle())
             
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 3) {
                 HStack {
                     Text(comment.authorName)
                         .font(.subheadline)
                         .fontWeight(.semibold)
+                        .foregroundColor(.primary)
                     
                     Spacer()
                     
                     Text(formatTimestamp(comment.timestamp))
-                        .font(.caption)
+                        .font(.caption2)
                         .foregroundColor(.secondary)
                 }
                 
                 Text(comment.content)
                     .font(.body)
                     .lineLimit(nil)
+                    .foregroundColor(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             
             Spacer()
         }
-        .padding()
-        .background(Color(.systemGray6))
-        .cornerRadius(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(.systemGray6))
+        )
     }
     
     private func formatTimestamp(_ date: Date) -> String {

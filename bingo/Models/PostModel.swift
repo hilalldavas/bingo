@@ -8,7 +8,7 @@ struct PostModel: Identifiable, Codable, Equatable {
     let authorProfileImage: String?
     let content: String
     let imageURL: String?
-    let timestamp: Date
+    var timestamp: Date
     var likes: Int
     var comments: Int
     var isLikedByUser: Bool
@@ -58,6 +58,9 @@ struct PostModel: Identifiable, Codable, Equatable {
             isLikedByUser: dict["isLikedByUser"] as? Bool ?? false
         )
         post.id = id
+        post.timestamp = timestamp.dateValue() // Timestamp'i Date'e çevir
+        print("DEBUG: PostModel.from - Timestamp: \(post.timestamp)")
+        print("DEBUG: PostModel.from - Timestamp string: \(post.timestamp.timeIntervalSince1970)")
         return post
     }
 }

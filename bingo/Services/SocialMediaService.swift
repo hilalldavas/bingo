@@ -2,6 +2,7 @@ import Foundation
 import FirebaseFirestore
 import FirebaseAuth
 import Combine
+import UIKit
 
 class SocialMediaService: ObservableObject {
     static let shared = SocialMediaService()
@@ -12,8 +13,8 @@ class SocialMediaService: ObservableObject {
     
     // MARK: - Posts
     
-    func createPost(content: String, imageData: Data?, completion: @escaping (Result<Void, Error>) -> Void) {
-        guard Auth.auth().currentUser != nil else {
+    func createPost(content: String, imageData: Data?, completion: @escaping (Result<PostModel, Error>) -> Void) {
+        guard let currentUser = Auth.auth().currentUser else {
             completion(.failure(NSError(domain: "Auth", code: -1, userInfo: [NSLocalizedDescriptionKey: "Kullanıcı giriş yapmamış"])))
             return
         }
@@ -21,12 +22,27 @@ class SocialMediaService: ObservableObject {
         let postRef = db.collection("posts").document()
         let postId = postRef.documentID
         
-        // Geçici olarak resim yükleme özelliğini devre dışı bırakıyoruz
-        // Firebase Storage eklenene kadar sadece metin postları destekleniyor
-        savePost(postId: postId, content: content, imageURL: nil, completion: completion)
+        // Eğer resim varsa, önce yükle sonra post'u kaydet
+        if let imageData = imageData, let image = UIImage(data: imageData) {
+            print("DEBUG: createPost - Resim yüklenecek, boyut: \(imageData.count) bytes")
+            StorageService.shared.uploadPostImage(image, postId: postId, userId: currentUser.uid) { [weak self] result in
+                switch result {
+                case .success(let imageURL):
+                    print("DEBUG: createPost - Resim yüklendi: \(imageURL)")
+                    self?.savePost(postId: postId, content: content, imageURL: imageURL, completion: completion)
+                case .failure(let error):
+                    print("DEBUG: createPost - Resim yükleme hatası: \(error.localizedDescription)")
+                    completion(.failure(error))
+                }
+            }
+        } else {
+            // Resim yoksa direkt post'u kaydet
+            print("DEBUG: createPost - Sadece metin postu kaydediliyor")
+            savePost(postId: postId, content: content, imageURL: nil, completion: completion)
+        }
     }
     
-    private func savePost(postId: String, content: String, imageURL: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+    private func savePost(postId: String, content: String, imageURL: String?, completion: @escaping (Result<PostModel, Error>) -> Void) {
         guard let currentUser = Auth.auth().currentUser else { 
             completion(.failure(NSError(domain: "Auth", code: -1, userInfo: [NSLocalizedDescriptionKey: "Kullanıcı giriş yapmamış"])))
             return 
@@ -35,21 +51,35 @@ class SocialMediaService: ObservableObject {
         print("DEBUG: Post oluşturma - Kullanıcı ID: \(currentUser.uid)")
         print("DEBUG: Kullanıcı email: \(currentUser.email ?? "nil")")
         
-        // Basit çözüm: Kullanıcının email'inden isim oluştur
-        let authorName: String
-        let authorProfileImage: String?
-        
-        if let email = currentUser.email {
-            // Email'den kullanıcı adı oluştur (@ işaretinden önceki kısmı al)
-            let emailPrefix = email.components(separatedBy: "@").first ?? "kullanici"
-            authorName = emailPrefix.capitalized
-            authorProfileImage = "https://ui-avatars.com/api/?name=\(emailPrefix.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "User")&background=random&color=fff&size=200"
-        } else {
-            authorName = "Kullanıcı"
-            authorProfileImage = "https://ui-avatars.com/api/?name=User&background=random&color=fff&size=200"
+        // Kullanıcının gerçek profil bilgilerini çek
+        fetchUserProfile(userId: currentUser.uid) { [weak self] result in
+            switch result {
+            case .success(let profile):
+                let authorName = profile?.fullName ?? "Kullanıcı"
+                let authorProfileImage = profile?.profileImageURL
+                
+                print("DEBUG: Post için kullanılacak isim: \(authorName)")
+                print("DEBUG: Post için kullanılacak profil fotoğrafı: \(authorProfileImage ?? "nil")")
+                
+                self?.createPostWithUserInfo(postId: postId, content: content, imageURL: imageURL, authorName: authorName, authorProfileImage: authorProfileImage, completion: completion)
+                
+            case .failure(let error):
+                print("DEBUG: Profil bilgileri çekilemedi, varsayılan bilgiler kullanılacak: \(error.localizedDescription)")
+                
+                // Profil bilgileri çekilemezse varsayılan bilgiler kullan
+                let authorName = currentUser.email?.components(separatedBy: "@").first?.capitalized ?? "Kullanıcı"
+                let authorProfileImage = "https://ui-avatars.com/api/?name=\(authorName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "User")&background=random&color=fff&size=200"
+                
+                self?.createPostWithUserInfo(postId: postId, content: content, imageURL: imageURL, authorName: authorName, authorProfileImage: authorProfileImage, completion: completion)
+            }
         }
-        
-        print("DEBUG: Post için kullanılacak isim: \(authorName)")
+    }
+    
+    private func createPostWithUserInfo(postId: String, content: String, imageURL: String?, authorName: String, authorProfileImage: String?, completion: @escaping (Result<PostModel, Error>) -> Void) {
+        guard let currentUser = Auth.auth().currentUser else { 
+            completion(.failure(NSError(domain: "Auth", code: -1, userInfo: [NSLocalizedDescriptionKey: "Kullanıcı giriş yapmamış"])))
+            return 
+        }
         
         let post = PostModel(
             authorId: currentUser.uid,
@@ -59,11 +89,16 @@ class SocialMediaService: ObservableObject {
             imageURL: imageURL
         )
         
+        print("DEBUG: createPostWithUserInfo - Post oluşturuluyor:")
+        print("DEBUG: - authorName: \(authorName)")
+        print("DEBUG: - authorProfileImage: \(authorProfileImage ?? "nil")")
+        print("DEBUG: - timestamp: \(post.timestamp)")
+        
         db.collection("posts").document(postId).setData(post.toDictionary()) { error in
             if let error = error {
                 completion(.failure(error))
             } else {
-                completion(.success(()))
+                completion(.success(post))
             }
         }
     }
@@ -196,8 +231,12 @@ class SocialMediaService: ObservableObject {
             self.fetchPost(postId: postId) { result in
                 switch result {
                 case .success(let post):
-                    print("DEBUG: Güncel post verileri çekildi - likes: \(post.likes), isLiked: \(post.isLikedByUser)")
-                    completion(.success(post))
+                    if let post = post {
+                        print("DEBUG: Güncel post verileri çekildi - likes: \(post.likes), isLiked: \(post.isLikedByUser)")
+                        completion(.success(post))
+                    } else {
+                        completion(.failure(NSError(domain: "Post", code: -1, userInfo: [NSLocalizedDescriptionKey: "Post bulunamadı"])))
+                    }
                 case .failure(let error):
                     print("DEBUG: Post fetch hatası: \(error.localizedDescription)")
                     completion(.failure(error))
@@ -361,10 +400,29 @@ class SocialMediaService: ObservableObject {
         }
     }
     
-        // MARK: - Image Upload
-        // Firebase Storage henüz eklenmediği için resim yükleme özelliği geçici olarak devre dışı
+    // MARK: - Image Upload
+    
+    /// Profil fotoğrafı yükler ve kullanıcı profilini günceller
+    func uploadProfileImage(_ image: UIImage, userId: String, completion: @escaping (Result<String, Error>) -> Void) {
+        print("DEBUG: uploadProfileImage - Başlatıldı")
+        StorageService.shared.uploadProfileImage(image, userId: userId) { [weak self] result in
+            switch result {
+            case .success(let imageURL):
+                print("DEBUG: uploadProfileImage - Başarılı: \(imageURL)")
+                completion(.success(imageURL))
+            case .failure(let error):
+                print("DEBUG: uploadProfileImage - Hata: \(error.localizedDescription)")
+                completion(.failure(error))
+            }
+        }
+    }
+    
+    /// Post resmini siler (post silindiğinde)
+    func deletePostImage(imageURL: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        StorageService.shared.deleteImage(at: imageURL, completion: completion)
+    }
         
-        // MARK: - Username Validation
+    // MARK: - Username Validation
         
         func checkUsernameAvailability(username: String, currentUserId: String, completion: @escaping (Result<Bool, Error>) -> Void) {
             print("DEBUG: Username kontrolü başlatılıyor: '\(username)', User ID: '\(currentUserId)'")
@@ -435,9 +493,9 @@ class SocialMediaService: ObservableObject {
                     completion(.failure(error))
                 } else {
                     // Update all posts and comments by this user with new profile info
-                    self?.updateUserPostsAndComments(userId: userId, userProfile: userProfile) { updateError in
-                        if let updateError = updateError {
-                            print("DEBUG: Error updating user posts/comments: \(updateError.localizedDescription)")
+                    self?.updateUserPostsAndComments(userId: userId, userProfile: userProfile) { updateResult in
+                        if case .failure(let error) = updateResult {
+                            print("DEBUG: Error updating user posts/comments: \(error.localizedDescription)")
                         }
                         completion(.success(()))
                     }
@@ -452,12 +510,12 @@ class SocialMediaService: ObservableObject {
             
             // Update posts
             dispatchGroup.enter()
-            db.collection("posts").whereField("authorId", isEqualTo: userId).getDocuments { snapshot, error in
+            db.collection("posts").whereField("authorId", isEqualTo: userId).getDocuments { [self] snapshot, error in
                 defer { dispatchGroup.leave() }
                 
                 if let documents = snapshot?.documents {
                     for document in documents {
-                        let postRef = db.collection("posts").document(document.documentID)
+                        let postRef = self.db.collection("posts").document(document.documentID)
                         batch.updateData([
                             "authorName": userProfile.fullName,
                             "authorProfileImage": userProfile.profileImageURL as Any
@@ -628,7 +686,7 @@ class SocialMediaService: ObservableObject {
         // MARK: - Debug Helper
         
         func testFirestoreRules(completion: @escaping (Result<String, Error>) -> Void) {
-            guard let currentUser = Auth.auth().currentUser else {
+            guard Auth.auth().currentUser != nil else {
                 completion(.failure(NSError(domain: "Auth", code: -1, userInfo: [NSLocalizedDescriptionKey: "Kullanıcı giriş yapmamış"])))
                 return
             }

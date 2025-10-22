@@ -24,7 +24,7 @@ struct MainTabView: View {
                 .tag(1)
             
             // Create Post Tab
-            CreatePostView(onPostCreated: {
+            CreatePostView(onPostCreated: { _ in
                 selectedTab = 0 // Switch to feed after creating post
             })
             .tabItem {
@@ -109,18 +109,39 @@ struct ProfileView: View {
                     } else if let profile = profileViewModel.userProfile {
                         // Profile Header
                         VStack(spacing: 15) {
-                            Circle()
-                                .fill(LinearGradient(
-                                    colors: [.purple.opacity(0.3), .blue.opacity(0.3)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ))
+                            // Profil Fotoğrafı
+                            if let profileImageURL = profile.profileImageURL, !profileImageURL.isEmpty {
+                                AsyncImage(url: URL(string: profileImageURL)) { image in
+                                    image
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                } placeholder: {
+                                    Circle()
+                                        .fill(LinearGradient(
+                                            colors: [.purple.opacity(0.3), .blue.opacity(0.3)],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        ))
+                                        .overlay(
+                                            ProgressView()
+                                        )
+                                }
                                 .frame(width: 100, height: 100)
-                                .overlay(
-                                    Image(systemName: "person.fill")
-                                        .foregroundColor(.white)
-                                        .font(.system(size: 40))
-                                )
+                                .clipShape(Circle())
+                            } else {
+                                Circle()
+                                    .fill(LinearGradient(
+                                        colors: [.purple.opacity(0.3), .blue.opacity(0.3)],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    ))
+                                    .frame(width: 100, height: 100)
+                                    .overlay(
+                                        Image(systemName: "person.fill")
+                                            .foregroundColor(.white)
+                                            .font(.system(size: 40))
+                                    )
+                            }
                             
                             Text(profile.fullName)
                                 .font(.title2)
@@ -189,35 +210,7 @@ struct ProfileView: View {
                             }
                         }
                         
-                        Spacer(minLength: 100)
-                        
-                        // Action Buttons
-                        VStack(spacing: 15) {
-                            Button(action: {
-                                showEditProfile = true
-                            }) {
-                                Text("Profili Düzenle")
-                                    .fontWeight(.semibold)
-                                    .foregroundColor(.white)
-                                    .frame(maxWidth: .infinity)
-                                    .padding()
-                                    .background(Color.blue)
-                                    .cornerRadius(12)
-                            }
-                            
-                            Button(action: {
-                                authViewModel.logout()
-                            }) {
-                                Text("Çıkış Yap")
-                                    .fontWeight(.semibold)
-                                    .foregroundColor(.white)
-                                    .frame(maxWidth: .infinity)
-                                    .padding()
-                                    .background(Color.red)
-                                    .cornerRadius(12)
-                            }
-                        }
-                        .padding(.horizontal)
+                        Spacer(minLength: 30)
                     } else {
                         VStack(spacing: 20) {
                             Image(systemName: "person.circle")
@@ -261,12 +254,34 @@ struct ProfileView: View {
             }
             .navigationTitle("Profil")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button(action: {
+                        authViewModel.logout()
+                    }) {
+                        Image(systemName: "rectangle.portrait.and.arrow.right")
+                            .foregroundColor(.red)
+                            .font(.title3)
+                    }
+                }
+                
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: {
+                        showEditProfile = true
+                    }) {
+                        Image(systemName: "pencil.circle.fill")
+                            .foregroundColor(.blue)
+                            .font(.title3)
+                    }
+                }
+            }
             .refreshable {
                 profileViewModel.refreshProfile()
             }
             .sheet(isPresented: $showEditProfile) {
                 EditProfileView(profile: profileViewModel.userProfile) { updatedProfile in
                     profileViewModel.userProfile = updatedProfile
+                    profileViewModel.refreshProfile() // Firestore'dan güncel veriyi çek
                     showEditProfile = false
                 }
             }
