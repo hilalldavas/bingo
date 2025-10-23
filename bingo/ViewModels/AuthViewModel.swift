@@ -57,21 +57,85 @@ class AuthViewModel: ObservableObject {
             return
         }
 
+        // Önce username kontrolü yap - EMAİL GÖNDERİLMEDEN ÖNCE
+        print("DEBUG: Signup - Username kontrolü başlatılıyor: '\(username)'")
+        SocialMediaService.shared.checkUsernameAvailability(username: username, currentUserId: "") { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                
+                switch result {
+                case .success(let isAvailable):
+                    if isAvailable {
+                        print("DEBUG: Signup - Username müsait, kayıt işlemi başlatılıyor")
+                        self.performSignup()
+                    } else {
+                        self.errorMessage = "Bu kullanıcı adı zaten alınmış. Lütfen başka bir kullanıcı adı seçin."
+                    }
+                case .failure(let error):
+                    print("DEBUG: Signup - Username kontrol hatası: \(error.localizedDescription)")
+                    // Hata durumunda da kayıt işlemini devam ettir (Firebase kuralları sorunu olabilir)
+                    self.performSignup()
+                }
+            }
+        }
+    }
+    
+    private func performSignup() {
         Auth.auth().createUser(withEmail: email, password: password) { [weak self] result, error in
             DispatchQueue.main.async {
+                guard let self = self else { return }
+                
                 if let error = error {
-                    self?.errorMessage = error.localizedDescription
+                    self.errorMessage = error.localizedDescription
                     return
                 }
-
-                // Email doğrulama linki gönder
-                Auth.auth().currentUser?.sendEmailVerification { emailError in
+                
+                guard let currentUser = Auth.auth().currentUser else {
+                    self.errorMessage = "Kullanıcı oluşturulamadı"
+                    return
+                }
+                
+                // Önce kullanıcı profilini oluştur (username database'e kaydedilsin)
+                let userProfile = UserProfileModel(
+                    email: self.email,
+                    username: self.username,
+                    fullName: self.fullName,
+                    bio: "Bingo Social'da yeni bir yolculuğa başladım! 🎯",
+                    profileImageURL: "https://ui-avatars.com/api/?name=\(self.fullName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "User")&background=random&color=fff&size=200"
+                )
+                
+                var profile = userProfile
+                profile.id = currentUser.uid
+                
+                print("DEBUG: Signup - Profil oluşturuluyor: \(profile.username)")
+                
+                // Profili Firestore'a kaydet
+                SocialMediaService.shared.createUserProfile(userProfile: profile) { profileResult in
                     DispatchQueue.main.async {
-                        if let emailError = emailError {
-                            self?.errorMessage = emailError.localizedDescription
-                        } else {
-                            self?.infoMessage = "Doğrulama linki email adresinize gönderildi. Lütfen mailinizi kontrol edin."
-                            self?.showVerificationScreen = true
+                        switch profileResult {
+                        case .success:
+                            print("DEBUG: Signup - Profil başarıyla oluşturuldu")
+                            
+                            // Profil oluşturulduktan sonra email doğrulama linki gönder
+                            Auth.auth().currentUser?.sendEmailVerification { emailError in
+                                DispatchQueue.main.async {
+                                    if let emailError = emailError {
+                                        self.errorMessage = emailError.localizedDescription
+                                    } else {
+                                        self.infoMessage = "Doğrulama linki email adresinize gönderildi. Lütfen mailinizi kontrol edin."
+                                        self.showVerificationScreen = true
+                                    }
+                                }
+                            }
+                            
+                        case .failure(let error):
+                            print("DEBUG: Signup - Profil oluşturma hatası: \(error.localizedDescription)")
+                            self.errorMessage = "Profil oluşturulamadı: \(error.localizedDescription)"
+                            
+                            // Profil oluşturulamazsa kullanıcıyı sil
+                            currentUser.delete { _ in
+                                print("DEBUG: Signup - Kullanıcı silindi (profil oluşturulamadı)")
+                            }
                         }
                     }
                 }
@@ -94,8 +158,9 @@ class AuthViewModel: ObservableObject {
                     self?.isLoggedIn = true
                     self?.errorMessage = ""
                     self?.showVerificationScreen = false
-                    // Kullanıcı giriş yaptığında profil oluştur
-                    self?.createUserProfileIfNeeded()
+                    
+                    // Eski kullanıcılar için profil yoksa oluştur (backward compatibility)
+                    self?.ensureProfileExists()
                 } else {
                     self?.errorMessage = "Email doğrulanmadı. Lütfen mailinizi kontrol edin ve linke tıklayın."
                     self?.showVerificationScreen = true
@@ -104,25 +169,25 @@ class AuthViewModel: ObservableObject {
         }
     }
 
-    private func createUserProfileIfNeeded() {
+    // Eski kullanıcılar için backward compatibility - profil yoksa varsayılan profil oluştur
+    private func ensureProfileExists() {
         guard let currentUser = Auth.auth().currentUser else { return }
         
-        // Kullanıcı profili var mı kontrol et
         SocialMediaService.shared.fetchUserProfile(userId: currentUser.uid) { result in
             switch result {
             case .success(let profile):
                 if profile == nil {
-                    // Profil yoksa oluştur - kayıt ol sırasında girilen bilgileri kullan
+                    print("DEBUG: Eski kullanıcı için profil oluşturuluyor...")
+                    // Profil yoksa varsayılan profil oluştur
                     let email = currentUser.email ?? "kullanici@example.com"
-                    let userFullName = self.fullName.isEmpty == false ? self.fullName : "Kullanıcı"
-                    let userUsername = self.username.isEmpty == false ? self.username : "kullanici_\(currentUser.uid.prefix(8))"
+                    let emailPrefix = email.components(separatedBy: "@").first ?? "kullanici"
                     
                     let defaultProfile = UserProfileModel(
                         email: email,
-                        username: userUsername,
-                        fullName: userFullName,
-                        bio: "Bingo Social'da yeni bir yolculuğa başladım! 🎯",
-                        profileImageURL: "https://ui-avatars.com/api/?name=\(userFullName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "User")&background=random&color=fff&size=200"
+                        username: "kullanici_\(currentUser.uid.prefix(8))",
+                        fullName: emailPrefix.capitalized,
+                        bio: "Bingo Social kullanıcısı",
+                        profileImageURL: "https://ui-avatars.com/api/?name=\(emailPrefix.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "User")&background=random&color=fff&size=200"
                     )
                     
                     var newProfile = defaultProfile
@@ -141,31 +206,6 @@ class AuthViewModel: ObservableObject {
                 }
             case .failure(let error):
                 print("DEBUG: Profil kontrolü hatası: \(error.localizedDescription)")
-                
-                // Hata durumunda da varsayılan profil oluşturmayı dene
-                let email = currentUser.email ?? "kullanici@example.com"
-                let userFullName = self.fullName.isEmpty == false ? self.fullName : "Kullanıcı"
-                let userUsername = self.username.isEmpty == false ? self.username : "kullanici_\(currentUser.uid.prefix(8))"
-                
-                let defaultProfile = UserProfileModel(
-                    email: email,
-                    username: userUsername,
-                    fullName: userFullName,
-                    bio: "Bingo Social'da yeni bir yolculuğa başladım! 🎯",
-                    profileImageURL: "https://ui-avatars.com/api/?name=\(userFullName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "User")&background=random&color=fff&size=200"
-                )
-                
-                var newProfile = defaultProfile
-                newProfile.id = currentUser.uid
-                
-                SocialMediaService.shared.createUserProfile(userProfile: newProfile) { result in
-                    switch result {
-                    case .success:
-                        print("DEBUG: Varsayılan profil başarıyla oluşturuldu (fallback)")
-                    case .failure(let error):
-                        print("DEBUG: Profil oluşturma hatası (fallback): \(error.localizedDescription)")
-                    }
-                }
             }
         }
     }

@@ -97,6 +97,17 @@ struct SignupView: View {
                 }
                 
                 Button {
+                    // Kayıt olmadan önce son bir kez kontrol et
+                    if vm.isCheckingUsername {
+                        vm.errorMessage = "Kullanıcı adı kontrol ediliyor, lütfen bekleyin..."
+                        return
+                    }
+                    
+                    if vm.usernameMessage.contains("❌") {
+                        vm.errorMessage = "Lütfen geçerli bir kullanıcı adı seçin"
+                        return
+                    }
+                    
                     vm.signup()
                 } label: {
                     Text("Kayıt Ol")
@@ -109,6 +120,7 @@ struct SignupView: View {
                         .shadow(radius: 5)
                 }
                 .padding(.top, 15)
+                .disabled(vm.isCheckingUsername || vm.fullName.isEmpty || vm.username.isEmpty || vm.email.isEmpty || vm.password.isEmpty)
                 
                 Button {
                     withAnimation(.spring()) {
@@ -147,7 +159,7 @@ struct SignupView: View {
                 return
             }
             
-            // Firebase'de kullanıcı adı kontrolü - kayıt ol sırasında henüz kullanıcı yok
+            // Gerçek zamanlı username kontrolü - EMAİL GÖNDERİLMEDEN ÖNCE
             vm.isCheckingUsername = true
             vm.usernameMessage = "Kontrol ediliyor..."
             

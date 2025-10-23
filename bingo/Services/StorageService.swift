@@ -19,13 +19,39 @@ class StorageService {
     func uploadProfileImage(_ image: UIImage, userId: String, completion: @escaping (Result<String, Error>) -> Void) {
         print("DEBUG: uploadProfileImage - Başlatıldı, userId: \(userId)")
         
-        // Geçici olarak mock URL döndür - test için
-        let mockURL = "https://ui-avatars.com/api/?name=\(userId)&background=random&color=fff&size=200"
-        print("DEBUG: uploadProfileImage - Mock URL döndürülüyor: \(mockURL)")
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            completion(.success(mockURL))
+        // Resmi optimize et ve sıkıştır
+        guard let imageData = resizeAndCompressImage(image, maxWidth: 800, compressionQuality: 0.7) else {
+            completion(.failure(StorageError.imageCompressionFailed))
+            return
         }
+        
+        print("DEBUG: uploadProfileImage - Resim boyutu: \(imageData.count) bytes")
+        
+        // Firebase Storage kurallarına uygun path formatı
+        let filename = "profile_\(userId)_\(Date().timeIntervalSince1970).jpg"
+        let storageRef = storage.reference().child("profile_images/\(filename)")
+        
+        uploadImage(data: imageData, to: storageRef, completion: completion)
+    }
+    
+    /// Resmi yeniden boyutlandır ve sıkıştır
+    private func resizeAndCompressImage(_ image: UIImage, maxWidth: CGFloat, compressionQuality: CGFloat) -> Data? {
+        var actualWidth = image.size.width
+        var actualHeight = image.size.height
+        
+        if actualWidth > maxWidth {
+            let ratio = maxWidth / actualWidth
+            actualWidth = maxWidth
+            actualHeight = actualHeight * ratio
+        }
+        
+        let rect = CGRect(x: 0, y: 0, width: actualWidth, height: actualHeight)
+        UIGraphicsBeginImageContextWithOptions(rect.size, false, 1.0)
+        image.draw(in: rect)
+        let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        
+        return resizedImage?.jpegData(compressionQuality: compressionQuality)
     }
     
     /// Post resmi yükler

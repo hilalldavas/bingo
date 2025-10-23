@@ -1,13 +1,13 @@
 import SwiftUI
-import PhotosUI
 
 struct CreatePostView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var socialService = SocialMediaService.shared
     @State private var postContent = ""
     @State private var selectedImage: UIImage?
-    @State private var showingImagePicker = false
-    @State private var showingPhotoPicker = false
+    @State private var showingImageSourcePicker = false
+    @State private var showingCamera = false
+    @State private var showingGallery = false
     @State private var isPosting = false
     @State private var errorMessage = ""
     
@@ -114,24 +114,12 @@ struct CreatePostView: View {
                 
                 HStack(spacing: 30) {
                     Button(action: {
-                        showingPhotoPicker = true
+                        showingImageSourcePicker = true
                     }) {
                         HStack(spacing: 8) {
-                            Image(systemName: "photo")
+                            Image(systemName: "photo.on.rectangle.angled")
                                 .font(.title3)
-                            Text("Fotoğraf")
-                                .font(.subheadline)
-                        }
-                        .foregroundColor(.purple)
-                    }
-                    
-                    Button(action: {
-                        showingImagePicker = true
-                    }) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "camera")
-                                .font(.title3)
-                            Text("Kamera")
+                            Text("Fotoğraf Ekle")
                                 .font(.subheadline)
                         }
                         .foregroundColor(.purple)
@@ -144,16 +132,20 @@ struct CreatePostView: View {
             .background(Color(.systemBackground))
         }
         .navigationBarHidden(true)
-        .photosPicker(isPresented: $showingPhotoPicker, selection: Binding<PhotosPickerItem?>(
-            get: { nil },
-            set: { item in
-                if let item = item {
-                    loadImage(from: item)
-                }
+        .confirmationDialog("Fotoğraf Seç", isPresented: $showingImageSourcePicker, titleVisibility: .visible) {
+            Button("Kameradan Çek") {
+                showingCamera = true
             }
-        ))
-        .sheet(isPresented: $showingImagePicker) {
-            ImagePicker(image: $selectedImage)
+            Button("Galeriden Seç") {
+                showingGallery = true
+            }
+            Button("İptal", role: .cancel) {}
+        }
+        .sheet(isPresented: $showingCamera) {
+            ImagePicker(image: $selectedImage, sourceType: .camera)
+        }
+        .sheet(isPresented: $showingGallery) {
+            ImagePicker(image: $selectedImage, sourceType: .photoLibrary)
         }
         .overlay(
             Group {
@@ -208,57 +200,6 @@ struct CreatePostView: View {
         }
     }
     
-    private func loadImage(from item: PhotosPickerItem) {
-        item.loadTransferable(type: Data.self) { result in
-            switch result {
-            case .success(let data):
-                if let data = data, let image = UIImage(data: data) {
-                    DispatchQueue.main.async {
-                        self.selectedImage = image
-                    }
-                }
-            case .failure(let error):
-                print("Error loading image: \(error)")
-            }
-        }
-    }
-}
-
-struct ImagePicker: UIViewControllerRepresentable {
-    @Binding var image: UIImage?
-    @Environment(\.dismiss) private var dismiss
-    
-    func makeUIViewController(context: Context) -> UIImagePickerController {
-        let picker = UIImagePickerController()
-        picker.delegate = context.coordinator
-        picker.sourceType = .camera
-        return picker
-    }
-    
-    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
-    
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-    
-    class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
-        let parent: ImagePicker
-        
-        init(_ parent: ImagePicker) {
-            self.parent = parent
-        }
-        
-        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
-            if let image = info[.originalImage] as? UIImage {
-                parent.image = image
-            }
-            parent.dismiss()
-        }
-        
-        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            parent.dismiss()
-        }
-    }
 }
 
 #Preview {

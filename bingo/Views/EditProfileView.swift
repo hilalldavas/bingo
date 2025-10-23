@@ -1,6 +1,5 @@
 import SwiftUI
 import FirebaseAuth
-import PhotosUI
 
 struct EditProfileView: View {
     let profile: UserProfileModel?
@@ -15,7 +14,9 @@ struct EditProfileView: View {
     @State private var usernameMessage = ""
     @State private var originalUsername = ""
     @State private var selectedImage: UIImage?
-    @State private var showingPhotoPicker = false
+    @State private var showingImageSourcePicker = false
+    @State private var showingCamera = false
+    @State private var showingGallery = false
     @State private var isUploadingImage = false
     
     @Environment(\.dismiss) private var dismiss
@@ -32,65 +33,79 @@ struct EditProfileView: View {
                             // Yeni seçilen resim
                             Image(uiImage: selectedImage)
                                 .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .frame(width: 100, height: 100)
+                                .scaledToFill()
+                                .frame(width: 120, height: 120)
                                 .clipShape(Circle())
+                                .overlay(
+                                    Circle()
+                                        .stroke(Color.blue, lineWidth: 3)
+                                )
                         } else if let profileImageURL = profile?.profileImageURL, !profileImageURL.isEmpty {
                             // Mevcut profil fotoğrafı
-                            AsyncImage(url: URL(string: profileImageURL)) { image in
-                                image
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                            } placeholder: {
-                                Circle()
-                                    .fill(LinearGradient(
-                                        colors: [.purple.opacity(0.3), .blue.opacity(0.3)],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    ))
-                                    .overlay(
-                                        ProgressView()
-                                    )
+                            AsyncImage(url: URL(string: profileImageURL)) { phase in
+                                switch phase {
+                                case .success(let image):
+                                    image
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 120, height: 120)
+                                        .clipShape(Circle())
+                                        .overlay(
+                                            Circle()
+                                                .stroke(Color.gray.opacity(0.3), lineWidth: 2)
+                                        )
+                                case .failure(_):
+                                    defaultAvatar()
+                                case .empty:
+                                    defaultAvatar()
+                                        .overlay(
+                                            ProgressView()
+                                        )
+                                @unknown default:
+                                    defaultAvatar()
+                                }
                             }
-                            .frame(width: 100, height: 100)
-                            .clipShape(Circle())
                         } else {
-                            // Varsayılan avatar
-                            Circle()
-                                .fill(LinearGradient(
-                                    colors: [.purple.opacity(0.3), .blue.opacity(0.3)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ))
-                                .frame(width: 100, height: 100)
-                                .overlay(
-                                    Image(systemName: "person.fill")
-                                        .foregroundColor(.white)
-                                        .font(.system(size: 40))
-                                )
+                            defaultAvatar()
                         }
                         
                         // Yükleniyor göstergesi
                         if isUploadingImage {
                             Circle()
-                                .fill(Color.black.opacity(0.5))
-                                .frame(width: 100, height: 100)
+                                .fill(Color.black.opacity(0.6))
+                                .frame(width: 120, height: 120)
                                 .overlay(
-                                    ProgressView()
-                                        .tint(.white)
+                                    VStack(spacing: 8) {
+                                        ProgressView()
+                                            .tint(.white)
+                                        Text("Yükleniyor...")
+                                            .font(.caption)
+                                            .foregroundColor(.white)
+                                    }
                                 )
                         }
                     }
                     
                     Button(action: {
-                        showingPhotoPicker = true
+                        showingImageSourcePicker = true
                     }) {
                         HStack(spacing: 5) {
                             Image(systemName: "camera.fill")
                             Text("Profil Fotoğrafı Değiştir")
                         }
-                        .font(.caption)
-                        .foregroundColor(.blue)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(
+                            LinearGradient(
+                                colors: [.blue, .purple],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .cornerRadius(20)
                     }
                     .disabled(isUploadingImage)
                 }
@@ -184,15 +199,39 @@ struct EditProfileView: View {
             .onAppear {
                 loadCurrentProfile()
             }
-            .photosPicker(isPresented: $showingPhotoPicker, selection: Binding<PhotosPickerItem?>(
-                get: { nil },
-                set: { item in
-                    if let item = item {
-                        loadImage(from: item)
-                    }
+            .confirmationDialog("Profil Fotoğrafı Seç", isPresented: $showingImageSourcePicker, titleVisibility: .visible) {
+                Button("Kameradan Çek") {
+                    showingCamera = true
                 }
-            ))
+                Button("Galeriden Seç") {
+                    showingGallery = true
+                }
+                Button("İptal", role: .cancel) {}
+            }
+            .sheet(isPresented: $showingCamera) {
+                ImagePicker(image: $selectedImage, sourceType: .camera)
+            }
+            .sheet(isPresented: $showingGallery) {
+                ImagePicker(image: $selectedImage, sourceType: .photoLibrary)
+            }
         }
+    }
+    
+    // Helper function for default avatar
+    @ViewBuilder
+    private func defaultAvatar() -> some View {
+        Circle()
+            .fill(LinearGradient(
+                colors: [.purple.opacity(0.3), .blue.opacity(0.3)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ))
+            .frame(width: 120, height: 120)
+            .overlay(
+                Image(systemName: "person.fill")
+                    .foregroundColor(.white)
+                    .font(.system(size: 50))
+            )
     }
     
     private func loadCurrentProfile() {
@@ -317,24 +356,6 @@ struct EditProfileView: View {
                     dismiss()
                 case .failure(let error):
                     errorMessage = "Profil güncellenirken hata oluştu: \(error.localizedDescription)"
-                }
-            }
-        }
-    }
-    
-    private func loadImage(from item: PhotosPickerItem) {
-        item.loadTransferable(type: Data.self) { result in
-            switch result {
-            case .success(let data):
-                if let data = data, let image = UIImage(data: data) {
-                    DispatchQueue.main.async {
-                        self.selectedImage = image
-                    }
-                }
-            case .failure(let error):
-                print("DEBUG: EditProfileView - Resim yükleme hatası: \(error)")
-                DispatchQueue.main.async {
-                    errorMessage = "Resim yüklenirken hata oluştu"
                 }
             }
         }
