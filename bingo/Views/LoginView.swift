@@ -77,11 +77,24 @@ struct LoginView: View {
                         .underline()
                 }
                 .padding(.top, 10)
+                
+                Button {
+                    vm.showPasswordReset = true
+                } label: {
+                    Text("Şifremi Unuttum")
+                        .foregroundColor(.white.opacity(0.8))
+                        .font(.subheadline)
+                }
+                .padding(.top, 5)
             }
             .padding(.horizontal, 30)
         }
         .fullScreenCover(isPresented: $showSignup) {
             SignupView(showSignup: $showSignup)
+                .environmentObject(vm)
+        }
+        .sheet(isPresented: $vm.showPasswordReset) {
+            PasswordResetView()
                 .environmentObject(vm)
         }
     }

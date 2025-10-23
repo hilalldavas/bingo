@@ -13,6 +13,8 @@ class AuthViewModel: ObservableObject {
     @Published var showVerificationScreen = false
     @Published var isCheckingUsername = false
     @Published var usernameMessage = ""
+    @Published var showPasswordReset = false
+    @Published var isPasswordResetLoading = false
 
     // Email ve şifre realtime kontrol
     var emailMessage: String? {
@@ -210,6 +212,36 @@ class AuthViewModel: ObservableObject {
         }
     }
     
+    // Password Reset
+    func resetPassword() {
+        guard !email.isEmpty else {
+            errorMessage = "Lütfen email adresinizi girin"
+            return
+        }
+        
+        guard emailMessage == nil else {
+            errorMessage = "Lütfen geçerli bir email adresi girin"
+            return
+        }
+        
+        isPasswordResetLoading = true
+        errorMessage = ""
+        infoMessage = ""
+        
+        Auth.auth().sendPasswordReset(withEmail: email) { [weak self] error in
+            DispatchQueue.main.async {
+                self?.isPasswordResetLoading = false
+                
+                if let error = error {
+                    self?.errorMessage = error.localizedDescription
+                } else {
+                    self?.infoMessage = "Şifre sıfırlama linki \(self?.email ?? "") adresine gönderildi. Lütfen mailinizi kontrol edin."
+                    self?.showPasswordReset = false
+                }
+            }
+        }
+    }
+    
     func logout() {
         do {
             try Auth.auth().signOut()
@@ -223,6 +255,8 @@ class AuthViewModel: ObservableObject {
             self.infoMessage = ""
             self.isCheckingUsername = false
             self.usernameMessage = ""
+            self.showPasswordReset = false
+            self.isPasswordResetLoading = false
         } catch {
             self.errorMessage = error.localizedDescription
         }
