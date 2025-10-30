@@ -147,22 +147,27 @@ class AuthViewModel: ObservableObject {
 
     // Login
     func login() {
+        // Info mesajını temizle
+        self.infoMessage = ""
+        
         Auth.auth().signIn(withEmail: email, password: password) { [weak self] result, error in
             DispatchQueue.main.async {
                 if let error = error {
-                    self?.errorMessage = error.localizedDescription
+                    // Silinmiş kullanıcı hatası için özel mesaj
+                    let nsError = error as NSError
+                    if nsError.code == 17011 { // User not found
+                        self?.errorMessage = "Bu hesap silinmiş veya mevcut değil. Lütfen yeni bir hesap oluşturun."
+                    } else {
+                        self?.errorMessage = error.localizedDescription
+                    }
                     return
                 }
 
                 guard let user = Auth.auth().currentUser else { return }
 
                 if user.isEmailVerified {
-                    self?.isLoggedIn = true
-                    self?.errorMessage = ""
-                    self?.showVerificationScreen = false
-                    
-                    // Eski kullanıcılar için profil yoksa oluştur (backward compatibility)
-                    self?.ensureProfileExists()
+                    // Hesap dondurulmuş mu kontrol et
+                    self?.checkAccountStatus(userId: user.uid)
                 } else {
                     self?.errorMessage = "Email doğrulanmadı. Lütfen mailinizi kontrol edin ve linke tıklayın."
                     self?.showVerificationScreen = true
@@ -259,6 +264,134 @@ class AuthViewModel: ObservableObject {
             self.isPasswordResetLoading = false
         } catch {
             self.errorMessage = error.localizedDescription
+        }
+    }
+    
+    // MARK: - Account Status Check
+    
+    /// Hesap durumunu kontrol eder (aktif, dondurulmuş, silinmiş)
+    private func checkAccountStatus(userId: String) {
+        print("DEBUG: Hesap durumu kontrol ediliyor - UserID: \(userId)")
+        
+        // Önce 30 gün geçmiş hesapları kontrol et
+        SocialMediaService.shared.checkAndDeleteExpiredDeactivatedAccounts(userId: userId) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                
+                switch result {
+                case .success(let wasDeleted):
+                    if wasDeleted {
+                        // Hesap 30 gün geçtiği için silindi
+                        print("DEBUG: Hesap 30 gün geçtiği için kalıcı olarak silindi")
+                        self.errorMessage = "Hesabınız 30 günden fazla dondurulduğu için kalıcı olarak silindi. Lütfen yeni bir hesap oluşturun."
+                        self.logout()
+                        return
+                    }
+                    
+                    // Hesap durumunu kontrol et
+                    SocialMediaService.shared.fetchUserProfile(userId: userId) { profileResult in
+                        DispatchQueue.main.async {
+                            switch profileResult {
+                            case .success(let profile):
+                                if let profile = profile {
+                                    if profile.isDeactivated {
+                                        // Hesap dondurulmuş - reaktive et
+                                        let daysRemaining = self.calculateRemainingDays(from: profile.deactivatedAt)
+                                        print("DEBUG: Hesap dondurulmuş, yeniden aktifleştiriliyor. Kalan gün: \(daysRemaining)")
+                                        
+                                        self.reactivateAccount(userId: userId)
+                                    } else {
+                                        // Hesap aktif
+                                        self.isLoggedIn = true
+                                        self.errorMessage = ""
+                                        self.showVerificationScreen = false
+                                        self.ensureProfileExists()
+                                    }
+                                } else {
+                                    // Profil bulunamadı
+                                    self.errorMessage = "Hesabınız sistemden silinmiş. Lütfen tekrar kayıt olun."
+                                    self.logout()
+                                }
+                            case .failure(let error):
+                                print("DEBUG: Profil kontrolü hatası: \(error.localizedDescription)")
+                                // Hata durumunda yine de giriş yap
+                                self.isLoggedIn = true
+                                self.ensureProfileExists()
+                            }
+                        }
+                    }
+                    
+                case .failure(let error):
+                    print("DEBUG: Deactivation kontrolü hatası: \(error.localizedDescription)")
+                    // Hata durumunda normal login devam etsin
+                    self.isLoggedIn = true
+                    self.ensureProfileExists()
+                }
+            }
+        }
+    }
+    
+    /// Hesabı yeniden aktifleştirir
+    private func reactivateAccount(userId: String) {
+        SocialMediaService.shared.reactivateAccount(userId: userId) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                
+                switch result {
+                case .success:
+                    print("DEBUG: Hesap başarıyla yeniden aktifleştirildi")
+                    self.isLoggedIn = true
+                    self.errorMessage = ""
+                    self.infoMessage = "Tekrar hoş geldiniz! Hesabınız yeniden aktifleştirildi."
+                    self.showVerificationScreen = false
+                case .failure(let error):
+                    print("DEBUG: Hesap aktifleştirme hatası: \(error.localizedDescription)")
+                    self.errorMessage = "Hesap aktifleştirilemedi: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
+    /// Dondurulmuş hesap için kalan gün sayısını hesaplar
+    private func calculateRemainingDays(from deactivatedAt: Date?) -> Int {
+        guard let deactivatedAt = deactivatedAt else { return 30 }
+        let daysPassed = Calendar.current.dateComponents([.day], from: deactivatedAt, to: Date()).day ?? 0
+        return max(0, 30 - daysPassed)
+    }
+    
+    // MARK: - User Profile Validation
+    
+    /// Firestore'da kullanıcı profili var mı kontrol eder
+    /// Profil silinmişse kullanıcıyı çıkış yapar
+    func validateUserProfile() {
+        guard let currentUser = Auth.auth().currentUser else {
+            print("DEBUG: validateUserProfile - Kullanıcı giriş yapmamış")
+            self.isLoggedIn = false
+            return
+        }
+        
+        print("DEBUG: validateUserProfile - Profil kontrolü başlatılıyor: \(currentUser.uid)")
+        
+        SocialMediaService.shared.fetchUserProfile(userId: currentUser.uid) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                
+                switch result {
+                case .success(let profile):
+                    if profile == nil {
+                        // Profil bulunamadı - kullanıcı veritabanından silinmiş
+                        print("DEBUG: validateUserProfile - Profil bulunamadı! Kullanıcı çıkış yapılıyor...")
+                        self.errorMessage = "Hesabınız sistemden silinmiş. Lütfen tekrar kayıt olun."
+                        self.logout()
+                    } else {
+                        print("DEBUG: validateUserProfile - Profil mevcut, kullanıcı geçerli")
+                    }
+                case .failure(let error):
+                    print("DEBUG: validateUserProfile - Hata: \(error.localizedDescription)")
+                    // Network hatası vs olabilir, kullanıcıyı çıkarmayalım
+                    // Sadece kritik hatalarda çıkış yapalım
+                }
+            }
         }
     }
 }

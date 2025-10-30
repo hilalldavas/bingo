@@ -94,10 +94,14 @@ class SocialMediaService: ObservableObject {
         print("DEBUG: - authorProfileImage: \(authorProfileImage ?? "nil")")
         print("DEBUG: - timestamp: \(post.timestamp)")
         
-        db.collection("posts").document(postId).setData(post.toDictionary()) { error in
+        db.collection("posts").document(postId).setData(post.toDictionary()) { [weak self] error in
             if let error = error {
                 completion(.failure(error))
             } else {
+                // Post başarıyla oluşturulduysa kullanıcı istatistiğini güncelle
+                self?.updateUserPostCount(userId: currentUser.uid, increment: 1) { _ in
+                    print("DEBUG: Kullanıcı post sayısı güncellendi")
+                }
                 completion(.success(post))
             }
         }
@@ -127,9 +131,110 @@ class SocialMediaService: ObservableObject {
                     PostModel.from(dict: doc.data(), id: doc.documentID)
                 }
                 
-                // Check like status for each post
-                self?.checkLikeStatusForPosts(posts: posts, userId: currentUser.uid, completion: completion)
+                // Önce silinmiş kullanıcıların postlarını filtrele
+                self?.filterPostsFromDeletedUsers(posts: posts, currentUserId: currentUser.uid, completion: completion)
             }
+    }
+    
+    /// Sadece takip edilen kullanıcıların postlarını getirir (Instagram feed algoritması)
+    func fetchFollowingPosts(completion: @escaping (Result<[PostModel], Error>) -> Void) {
+        guard let currentUser = Auth.auth().currentUser else {
+            completion(.failure(NSError(domain: "Auth", code: -1, userInfo: [NSLocalizedDescriptionKey: "Kullanıcı giriş yapmamış"])))
+            return
+        }
+        
+        // Önce takip edilen kullanıcıları çek
+        db.collection("users").document(currentUser.uid).collection("following").getDocuments { [weak self] snapshot, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            
+            guard let followingDocs = snapshot?.documents else {
+                // Kimseyi takip etmiyorsa tüm postları göster
+                self?.fetchPosts(completion: completion)
+                return
+            }
+            
+            // Takip edilen kullanıcı ID'lerini al
+            let followingIds = followingDocs.map { $0.documentID }
+            
+            // Kendi ID'sini de ekle (kendi postlarını da görmek için)
+            var userIds = followingIds
+            userIds.append(currentUser.uid)
+            
+            if userIds.isEmpty {
+                completion(.success([]))
+                return
+            }
+            
+            // Takip edilen kullanıcıların postlarını çek (max 10 user ID per query)
+            self?.fetchPostsByUserIds(userIds: Array(userIds.prefix(10)), currentUserId: currentUser.uid, completion: completion)
+        }
+    }
+    
+    private func fetchPostsByUserIds(userIds: [String], currentUserId: String, completion: @escaping (Result<[PostModel], Error>) -> Void) {
+        db.collection("posts")
+            .whereField("authorId", in: userIds)
+            .order(by: "timestamp", descending: true)
+            .limit(to: 50)
+            .getDocuments { [weak self] snapshot, error in
+                if let error = error {
+                    completion(.failure(error))
+                    return
+                }
+                
+                guard let documents = snapshot?.documents else {
+                    completion(.success([]))
+                    return
+                }
+                
+                let posts = documents.compactMap { doc -> PostModel? in
+                    PostModel.from(dict: doc.data(), id: doc.documentID)
+                }
+                
+                // Silinmiş ve dondurulmuş kullanıcıları filtrele
+                self?.filterPostsFromDeletedUsers(posts: posts, currentUserId: currentUserId, completion: completion)
+            }
+    }
+    
+    /// Silinmiş ve dondurulmuş kullanıcıların postlarını filtreler
+    private func filterPostsFromDeletedUsers(posts: [PostModel], currentUserId: String, completion: @escaping (Result<[PostModel], Error>) -> Void) {
+        let dispatchGroup = DispatchGroup()
+        var validPosts: [PostModel] = []
+        
+        for post in posts {
+            dispatchGroup.enter()
+            
+            // Her post için author'un profilinin var olup olmadığını ve aktif olup olmadığını kontrol et
+            fetchUserProfile(userId: post.authorId) { result in
+                defer { dispatchGroup.leave() }
+                
+                switch result {
+                case .success(let profile):
+                    if let profile = profile {
+                        // Profil var mı ve aktif mi kontrol et
+                        if !profile.isDeactivated {
+                            // Aktif kullanıcı, post'u ekle
+                            validPosts.append(post)
+                        } else {
+                            print("DEBUG: Post atlandı - Kullanıcı hesabı dondurulmuş: \(post.authorId)")
+                        }
+                    } else {
+                        print("DEBUG: Post atlandı - Kullanıcı profili bulunamadı: \(post.authorId)")
+                    }
+                case .failure:
+                    // Hata durumunda da post'u dahil etme (güvenli taraf)
+                    print("DEBUG: Post atlandı - Profil kontrol hatası: \(post.authorId)")
+                }
+            }
+        }
+        
+        dispatchGroup.notify(queue: .main) {
+            print("DEBUG: Toplam \(posts.count) post, \(validPosts.count) geçerli post")
+            // Geçerli postlar için like kontrolü yap
+            self.checkLikeStatusForPosts(posts: validPosts, userId: currentUserId, completion: completion)
+        }
     }
     
     private func checkLikeStatusForPosts(posts: [PostModel], userId: String, completion: @escaping (Result<[PostModel], Error>) -> Void) {
@@ -199,13 +304,21 @@ class SocialMediaService: ObservableObject {
             } else {
                 // Like
                 print("DEBUG: Like işlemi başlatılıyor")
-                likeRef.setData(["userId": currentUser.uid, "timestamp": Date()]) { error in
+                likeRef.setData(["userId": currentUser.uid, "timestamp": Date()]) { [weak self] error in
                     if let error = error {
                         print("DEBUG: Like hatası: \(error.localizedDescription)")
                         completion(.failure(error))
                     } else {
                         print("DEBUG: Like başarılı")
-                        self.updatePostLikesAndFetch(postId: postId, increment: 1, currentUserId: currentUser.uid, completion: completion)
+                        
+                        // Post sahibine bildirim gönder
+                        self?.db.collection("posts").document(postId).getDocument { snapshot, _ in
+                            if let authorId = snapshot?.data()?["authorId"] as? String {
+                                self?.createNotification(toUserId: authorId, type: .like, postId: postId) { _ in }
+                            }
+                        }
+                        
+                        self?.updatePostLikesAndFetch(postId: postId, increment: 1, currentUserId: currentUser.uid, completion: completion)
                     }
                 }
             }
@@ -315,12 +428,19 @@ class SocialMediaService: ObservableObject {
             content: content
         )
         
-        db.collection("posts").document(postId).collection("comments").addDocument(data: comment.toDictionary()) { error in
+        db.collection("posts").document(postId).collection("comments").addDocument(data: comment.toDictionary()) { [weak self] error in
             if let error = error {
                 completion(.failure(error))
             } else {
+                // Post sahibine bildirim gönder
+                self?.db.collection("posts").document(postId).getDocument { snapshot, _ in
+                    if let authorId = snapshot?.data()?["authorId"] as? String {
+                        self?.createNotification(toUserId: authorId, type: .comment, postId: postId) { _ in }
+                    }
+                }
+                
                 // Update comment count
-                self.db.collection("posts").document(postId).updateData([
+                self?.db.collection("posts").document(postId).updateData([
                     "comments": FieldValue.increment(Int64(1))
                 ]) { error in
                     if let error = error {
@@ -679,6 +799,599 @@ class SocialMediaService: ObservableObject {
                     var finalPost = updatedPost
                     finalPost.id = postId
                     completion(.success(finalPost))
+                }
+            }
+        }
+        
+        // MARK: - Story System
+        
+        /// Yeni story oluşturur
+        func createStory(imageData: Data?, completion: @escaping (Result<StoryModel, Error>) -> Void) {
+            guard let currentUser = Auth.auth().currentUser else {
+                completion(.failure(NSError(domain: "Auth", code: -1, userInfo: [NSLocalizedDescriptionKey: "Kullanıcı giriş yapmamış"])))
+                return
+            }
+            
+            let storyRef = db.collection("stories").document()
+            let storyId = storyRef.documentID
+            
+            // Profil bilgilerini çek
+            fetchUserProfile(userId: currentUser.uid) { [weak self] result in
+                guard let self = self else { return }
+                
+                let authorName: String
+                let authorProfileImage: String?
+                
+                switch result {
+                case .success(let profile):
+                    authorName = profile?.fullName ?? "Kullanıcı"
+                    authorProfileImage = profile?.profileImageURL
+                case .failure:
+                    authorName = "Kullanıcı"
+                    authorProfileImage = nil
+                }
+                
+                if let imageData = imageData, let image = UIImage(data: imageData) {
+                    // Önce fotoğrafı yükle
+                    StorageService.shared.uploadStoryImage(image, storyId: storyId, userId: currentUser.uid) { uploadResult in
+                        switch uploadResult {
+                        case .success(let imageURL):
+                            self.saveStory(storyId: storyId, authorName: authorName, authorProfileImage: authorProfileImage, imageURL: imageURL, completion: completion)
+                        case .failure(let error):
+                            completion(.failure(error))
+                        }
+                    }
+                } else {
+                    completion(.failure(NSError(domain: "Story", code: -1, userInfo: [NSLocalizedDescriptionKey: "Fotoğraf gerekli"])))
+                }
+            }
+        }
+        
+        private func saveStory(storyId: String, authorName: String, authorProfileImage: String?, imageURL: String, completion: @escaping (Result<StoryModel, Error>) -> Void) {
+            guard let currentUser = Auth.auth().currentUser else {
+                completion(.failure(NSError(domain: "Auth", code: -1, userInfo: [NSLocalizedDescriptionKey: "Kullanıcı giriş yapmamış"])))
+                return
+            }
+            
+            let story = StoryModel(
+                authorId: currentUser.uid,
+                authorName: authorName,
+                authorProfileImage: authorProfileImage,
+                imageURL: imageURL
+            )
+            
+            db.collection("stories").document(storyId).setData(story.toDictionary()) { error in
+                if let error = error {
+                    completion(.failure(error))
+                } else {
+                    completion(.success(story))
+                }
+            }
+        }
+        
+        /// Aktif storyleri getirir (24 saatten yeni)
+        func fetchStories(completion: @escaping (Result<[String: [StoryModel]], Error>) -> Void) {
+            guard let currentUser = Auth.auth().currentUser else {
+                completion(.failure(NSError(domain: "Auth", code: -1, userInfo: [NSLocalizedDescriptionKey: "Kullanıcı giriş yapmamış"])))
+                return
+            }
+            
+            // 24 saat öncesi timestamp
+            let twentyFourHoursAgo = Calendar.current.date(byAdding: .hour, value: -24, to: Date()) ?? Date()
+            
+            db.collection("stories")
+                .whereField("timestamp", isGreaterThan: Timestamp(date: twentyFourHoursAgo))
+                .order(by: "timestamp", descending: false)
+                .getDocuments { snapshot, error in
+                    if let error = error {
+                        completion(.failure(error))
+                        return
+                    }
+                    
+                    guard let documents = snapshot?.documents else {
+                        completion(.success([:]))
+                        return
+                    }
+                    
+                    let stories = documents.compactMap { doc -> StoryModel? in
+                        StoryModel.from(dict: doc.data(), id: doc.documentID)
+                    }
+                    
+                    // Kullanıcılara göre grupla
+                    var groupedStories: [String: [StoryModel]] = [:]
+                    for story in stories {
+                        if groupedStories[story.authorId] == nil {
+                            groupedStories[story.authorId] = []
+                        }
+                        groupedStories[story.authorId]?.append(story)
+                    }
+                    
+                    completion(.success(groupedStories))
+                }
+        }
+        
+        /// Story'yi görüntülendi olarak işaretle
+        func markStoryAsViewed(storyId: String, userId: String, completion: @escaping (Result<Void, Error>) -> Void) {
+            db.collection("stories").document(storyId).updateData([
+                "views": FieldValue.arrayUnion([userId])
+            ]) { error in
+                if let error = error {
+                    completion(.failure(error))
+                } else {
+                    completion(.success(()))
+                }
+            }
+        }
+        
+        /// Eski storyleri sil (24 saatten eskiler)
+        func deleteExpiredStories(completion: @escaping (Result<Void, Error>) -> Void) {
+            let twentyFourHoursAgo = Calendar.current.date(byAdding: .hour, value: -24, to: Date()) ?? Date()
+            
+            db.collection("stories")
+                .whereField("timestamp", isLessThan: Timestamp(date: twentyFourHoursAgo))
+                .getDocuments { [weak self] snapshot, error in
+                    if let error = error {
+                        completion(.failure(error))
+                        return
+                    }
+                    
+                    guard let documents = snapshot?.documents else {
+                        completion(.success(()))
+                        return
+                    }
+                    
+                    let batch = self?.db.batch()
+                    for document in documents {
+                        batch?.deleteDocument(document.reference)
+                    }
+                    
+                    batch?.commit { error in
+                        if let error = error {
+                            completion(.failure(error))
+                        } else {
+                            print("DEBUG: \(documents.count) eski story silindi")
+                            completion(.success(()))
+                        }
+                    }
+                }
+        }
+        
+        // MARK: - Messaging (DM)
+        
+        /// Mesaj gönder
+        func sendMessage(toUserId: String, text: String, completion: @escaping (Result<Void, Error>) -> Void) {
+            guard let currentUserId = Auth.auth().currentUser?.uid else {
+                completion(.failure(NSError(domain: "Auth", code: -1, userInfo: [NSLocalizedDescriptionKey: "Kullanıcı giriş yapmamış"])))
+                return
+            }
+            
+            let message = MessageModel(senderId: currentUserId, receiverId: toUserId, text: text)
+            
+            // Her iki kullanıcının messages koleksiyonuna ekle
+            db.collection("messages").addDocument(data: message.toDictionary()) { error in
+                if let error = error {
+                    completion(.failure(error))
+                } else {
+                    completion(.success(()))
+                }
+            }
+        }
+        
+        /// Kullanıcılar arası mesajları getir
+        func fetchMessages(withUserId: String, completion: @escaping (Result<[MessageModel], Error>) -> Void) {
+            guard let currentUserId = Auth.auth().currentUser?.uid else {
+                completion(.failure(NSError(domain: "Auth", code: -1, userInfo: [NSLocalizedDescriptionKey: "Kullanıcı giriş yapmamış"])))
+                return
+            }
+            
+            db.collection("messages")
+                .whereFilter(Filter.orFilter([
+                    Filter.andFilter([
+                        Filter.whereField("senderId", isEqualTo: currentUserId),
+                        Filter.whereField("receiverId", isEqualTo: withUserId)
+                    ]),
+                    Filter.andFilter([
+                        Filter.whereField("senderId", isEqualTo: withUserId),
+                        Filter.whereField("receiverId", isEqualTo: currentUserId)
+                    ])
+                ]))
+                .order(by: "timestamp", descending: false)
+                .getDocuments { snapshot, error in
+                    if let error = error {
+                        completion(.failure(error))
+                        return
+                    }
+                    
+                    guard let documents = snapshot?.documents else {
+                        completion(.success([]))
+                        return
+                    }
+                    
+                    let messages = documents.compactMap { doc -> MessageModel? in
+                        MessageModel.from(dict: doc.data(), id: doc.documentID)
+                    }
+                    
+                    completion(.success(messages))
+                }
+        }
+        
+        // MARK: - Notifications
+        
+        /// Bildirim oluştur
+        func createNotification(toUserId: String, type: NotificationType, postId: String? = nil, completion: @escaping (Result<Void, Error>) -> Void) {
+            guard let currentUser = Auth.auth().currentUser else {
+                completion(.failure(NSError(domain: "Auth", code: -1, userInfo: [NSLocalizedDescriptionKey: "Kullanıcı giriş yapmamış"])))
+                return
+            }
+            
+            // Kendine bildirim gönderme
+            if toUserId == currentUser.uid {
+                completion(.success(()))
+                return
+            }
+            
+            // Kullanıcı bilgilerini çek
+            fetchUserProfile(userId: currentUser.uid) { [weak self] result in
+                guard let self = self else { return }
+                
+                let userName: String
+                let userProfileImage: String?
+                
+                switch result {
+                case .success(let profile):
+                    userName = profile?.fullName ?? "Kullanıcı"
+                    userProfileImage = profile?.profileImageURL
+                case .failure:
+                    userName = "Kullanıcı"
+                    userProfileImage = nil
+                }
+                
+                let notification = NotificationModel(
+                    type: type,
+                    fromUserId: currentUser.uid,
+                    fromUserName: userName,
+                    fromUserProfileImage: userProfileImage,
+                    postId: postId
+                )
+                
+                self.db.collection("users").document(toUserId).collection("notifications")
+                    .addDocument(data: notification.toDictionary()) { error in
+                        if let error = error {
+                            completion(.failure(error))
+                        } else {
+                            print("DEBUG: Bildirim oluşturuldu: \(type.rawValue)")
+                            completion(.success(()))
+                        }
+                    }
+            }
+        }
+        
+        /// Bildirimleri getir
+        func fetchNotifications(userId: String, completion: @escaping (Result<[NotificationModel], Error>) -> Void) {
+            db.collection("users").document(userId).collection("notifications")
+                .order(by: "timestamp", descending: true)
+                .limit(to: 50)
+                .getDocuments { snapshot, error in
+                    if let error = error {
+                        completion(.failure(error))
+                        return
+                    }
+                    
+                    guard let documents = snapshot?.documents else {
+                        completion(.success([]))
+                        return
+                    }
+                    
+                    let notifications = documents.compactMap { doc -> NotificationModel? in
+                        NotificationModel.from(dict: doc.data(), id: doc.documentID)
+                    }
+                    
+                    completion(.success(notifications))
+                }
+        }
+        
+        /// Bildirimi okundu olarak işaretle
+        func markNotificationAsRead(userId: String, notificationId: String, completion: @escaping (Result<Void, Error>) -> Void) {
+            db.collection("users").document(userId).collection("notifications").document(notificationId)
+                .updateData(["isRead": true]) { error in
+                    if let error = error {
+                        completion(.failure(error))
+                    } else {
+                        completion(.success(()))
+                    }
+                }
+        }
+        
+        // MARK: - Search & Discovery
+        
+        /// Kullanıcı ara (username veya fullName'de)
+        func searchUsers(query: String, completion: @escaping (Result<[UserProfileModel], Error>) -> Void) {
+            let lowercaseQuery = query.lowercased()
+            
+            db.collection("users")
+                .limit(to: 20)
+                .getDocuments { snapshot, error in
+                    if let error = error {
+                        completion(.failure(error))
+                        return
+                    }
+                    
+                    guard let documents = snapshot?.documents else {
+                        completion(.success([]))
+                        return
+                    }
+                    
+                    let users = documents.compactMap { doc -> UserProfileModel? in
+                        UserProfileModel.from(dict: doc.data(), id: doc.documentID)
+                    }.filter { user in
+                        // Aktif olmayan kullanıcıları gösterme
+                        if user.isDeactivated { return false }
+                        
+                        // Username veya fullName'de ara
+                        let usernameMatch = user.username.lowercased().contains(lowercaseQuery)
+                        let fullNameMatch = user.fullName.lowercased().contains(lowercaseQuery)
+                        
+                        return usernameMatch || fullNameMatch
+                    }
+                    
+                    completion(.success(users))
+                }
+        }
+        
+        /// Trend (popüler) postları getirir
+        func fetchTrendingPosts(completion: @escaping (Result<[PostModel], Error>) -> Void) {
+            guard let currentUser = Auth.auth().currentUser else {
+                completion(.failure(NSError(domain: "Auth", code: -1, userInfo: [NSLocalizedDescriptionKey: "Kullanıcı giriş yapmamış"])))
+                return
+            }
+            
+            // En çok beğenilen postları getir
+            db.collection("posts")
+                .order(by: "likes", descending: true)
+                .order(by: "timestamp", descending: true)
+                .limit(to: 30)
+                .getDocuments { [weak self] snapshot, error in
+                    if let error = error {
+                        completion(.failure(error))
+                        return
+                    }
+                    
+                    guard let documents = snapshot?.documents else {
+                        completion(.success([]))
+                        return
+                    }
+                    
+                    let posts = documents.compactMap { doc -> PostModel? in
+                        PostModel.from(dict: doc.data(), id: doc.documentID)
+                    }
+                    
+                    // Silinmiş/dondurulmuş kullanıcıları filtrele
+                    self?.filterPostsFromDeletedUsers(posts: posts, currentUserId: currentUser.uid, completion: completion)
+                }
+        }
+        
+        // MARK: - Follow System
+        
+        /// Kullanıcıyı takip et
+        func followUser(userId: String, targetUserId: String, completion: @escaping (Result<Void, Error>) -> Void) {
+            print("DEBUG: followUser - \(userId) takip ediyor: \(targetUserId)")
+            
+            let batch = db.batch()
+            
+            // 1. Takip eden kullanıcının "following" listesine ekle
+            let followingRef = db.collection("users").document(userId).collection("following").document(targetUserId)
+            batch.setData(["timestamp": Timestamp(date: Date())], forDocument: followingRef)
+            
+            // 2. Takip edilen kullanıcının "followers" listesine ekle
+            let followerRef = db.collection("users").document(targetUserId).collection("followers").document(userId)
+            batch.setData(["timestamp": Timestamp(date: Date())], forDocument: followerRef)
+            
+            // 3. Takip eden kullanıcının "following" sayısını artır
+            let userRef = db.collection("users").document(userId)
+            batch.updateData(["following": FieldValue.increment(Int64(1))], forDocument: userRef)
+            
+            // 4. Takip edilen kullanıcının "followers" sayısını artır
+            let targetUserRef = db.collection("users").document(targetUserId)
+            batch.updateData(["followers": FieldValue.increment(Int64(1))], forDocument: targetUserRef)
+            
+            batch.commit { [weak self] error in
+                if let error = error {
+                    print("DEBUG: followUser hatası: \(error.localizedDescription)")
+                    completion(.failure(error))
+                } else {
+                    print("DEBUG: followUser başarılı")
+                    
+                    // Takip edilen kullanıcıya bildirim gönder
+                    self?.createNotification(toUserId: targetUserId, type: .follow) { _ in }
+                    
+                    completion(.success(()))
+                }
+            }
+        }
+        
+        /// Kullanıcıyı takipten çıkar
+        func unfollowUser(userId: String, targetUserId: String, completion: @escaping (Result<Void, Error>) -> Void) {
+            print("DEBUG: unfollowUser - \(userId) takipten çıkıyor: \(targetUserId)")
+            
+            let batch = db.batch()
+            
+            // 1. Takip eden kullanıcının "following" listesinden sil
+            let followingRef = db.collection("users").document(userId).collection("following").document(targetUserId)
+            batch.deleteDocument(followingRef)
+            
+            // 2. Takip edilen kullanıcının "followers" listesinden sil
+            let followerRef = db.collection("users").document(targetUserId).collection("followers").document(userId)
+            batch.deleteDocument(followerRef)
+            
+            // 3. Takip eden kullanıcının "following" sayısını azalt
+            let userRef = db.collection("users").document(userId)
+            batch.updateData(["following": FieldValue.increment(Int64(-1))], forDocument: userRef)
+            
+            // 4. Takip edilen kullanıcının "followers" sayısını azalt
+            let targetUserRef = db.collection("users").document(targetUserId)
+            batch.updateData(["followers": FieldValue.increment(Int64(-1))], forDocument: targetUserRef)
+            
+            batch.commit { error in
+                if let error = error {
+                    print("DEBUG: unfollowUser hatası: \(error.localizedDescription)")
+                    completion(.failure(error))
+                } else {
+                    print("DEBUG: unfollowUser başarılı")
+                    completion(.success(()))
+                }
+            }
+        }
+        
+        /// Kullanıcıyı takip ediyor mu kontrol et
+        func isFollowing(userId: String, targetUserId: String, completion: @escaping (Result<Bool, Error>) -> Void) {
+            db.collection("users").document(userId).collection("following").document(targetUserId).getDocument { snapshot, error in
+                if let error = error {
+                    completion(.failure(error))
+                } else {
+                    completion(.success(snapshot?.exists ?? false))
+                }
+            }
+        }
+        
+        // MARK: - Account Deactivation (30 days)
+        
+        /// Hesabı geçici olarak dondurur (30 gün)
+        func deactivateAccount(userId: String, completion: @escaping (Result<Void, Error>) -> Void) {
+            print("DEBUG: Hesap dondurma başlatıldı - UserID: \(userId)")
+            
+            db.collection("users").document(userId).updateData([
+                "isDeactivated": true,
+                "deactivatedAt": Timestamp(date: Date())
+            ]) { error in
+                if let error = error {
+                    print("DEBUG: Hesap dondurma hatası: \(error.localizedDescription)")
+                    completion(.failure(error))
+                } else {
+                    print("DEBUG: Hesap başarıyla donduruldu")
+                    completion(.success(()))
+                }
+            }
+        }
+        
+        /// Hesabı yeniden aktifleştirir
+        func reactivateAccount(userId: String, completion: @escaping (Result<Void, Error>) -> Void) {
+            print("DEBUG: Hesap yeniden aktifleştiriliyor - UserID: \(userId)")
+            
+            db.collection("users").document(userId).updateData([
+                "isDeactivated": false,
+                "deactivatedAt": FieldValue.delete()
+            ]) { error in
+                if let error = error {
+                    print("DEBUG: Hesap aktifleştirme hatası: \(error.localizedDescription)")
+                    completion(.failure(error))
+                } else {
+                    print("DEBUG: Hesap başarıyla aktifleştirildi")
+                    completion(.success(()))
+                }
+            }
+        }
+        
+        /// 30 günden fazla dondurulmuş hesapları kalıcı olarak siler
+        func checkAndDeleteExpiredDeactivatedAccounts(userId: String, completion: @escaping (Result<Bool, Error>) -> Void) {
+            fetchUserProfile(userId: userId) { [weak self] result in
+                switch result {
+                case .success(let profile):
+                    guard let profile = profile else {
+                        completion(.success(false))
+                        return
+                    }
+                    
+                    if profile.isDeactivated, let deactivatedAt = profile.deactivatedAt {
+                        let daysSinceDeactivation = Calendar.current.dateComponents([.day], from: deactivatedAt, to: Date()).day ?? 0
+                        
+                        print("DEBUG: Hesap \(daysSinceDeactivation) gündür dondurulmuş")
+                        
+                        if daysSinceDeactivation > 30 {
+                            print("DEBUG: 30 gün geçmiş, hesap kalıcı olarak siliniyor...")
+                            self?.deleteUserAndAllContent(userId: userId) { deleteResult in
+                                switch deleteResult {
+                                case .success:
+                                    completion(.success(true)) // Hesap silindi
+                                case .failure(let error):
+                                    completion(.failure(error))
+                                }
+                            }
+                        } else {
+                            completion(.success(false)) // Henüz silinmedi
+                        }
+                    } else {
+                        completion(.success(false)) // Aktif hesap
+                    }
+                case .failure(let error):
+                    completion(.failure(error))
+                }
+            }
+        }
+        
+        // MARK: - User Deletion (Cascade)
+        
+        /// Kullanıcı silindiğinde tüm içeriğini siler (posts, comments, likes)
+        func deleteUserAndAllContent(userId: String, completion: @escaping (Result<Void, Error>) -> Void) {
+            let batch = db.batch()
+            let dispatchGroup = DispatchGroup()
+            
+            print("DEBUG: Kullanıcı ve tüm içeriği siliniyor - UserID: \(userId)")
+            
+            // 1. Kullanıcının tüm postlarını sil
+            dispatchGroup.enter()
+            db.collection("posts").whereField("authorId", isEqualTo: userId).getDocuments { [weak self] snapshot, error in
+                defer { dispatchGroup.leave() }
+                
+                if let documents = snapshot?.documents {
+                    print("DEBUG: \(documents.count) post siliniyor...")
+                    for document in documents {
+                        batch.deleteDocument(document.reference)
+                    }
+                }
+            }
+            
+            // 2. Kullanıcının tüm yorumlarını sil
+            dispatchGroup.enter()
+            db.collectionGroup("comments").whereField("authorId", isEqualTo: userId).getDocuments { snapshot, error in
+                defer { dispatchGroup.leave() }
+                
+                if let documents = snapshot?.documents {
+                    print("DEBUG: \(documents.count) yorum siliniyor...")
+                    for document in documents {
+                        batch.deleteDocument(document.reference)
+                    }
+                }
+            }
+            
+            // 3. Kullanıcının tüm beğenilerini sil
+            dispatchGroup.enter()
+            db.collectionGroup("likes").whereField("userId", isEqualTo: userId).getDocuments { snapshot, error in
+                defer { dispatchGroup.leave() }
+                
+                if let documents = snapshot?.documents {
+                    print("DEBUG: \(documents.count) beğeni siliniyor...")
+                    for document in documents {
+                        batch.deleteDocument(document.reference)
+                    }
+                }
+            }
+            
+            // 4. Son olarak kullanıcı profilini sil
+            dispatchGroup.notify(queue: .main) { [weak self] in
+                let userRef = self?.db.collection("users").document(userId)
+                if let userRef = userRef {
+                    batch.deleteDocument(userRef)
+                }
+                
+                // Batch commit
+                batch.commit { error in
+                    if let error = error {
+                        print("DEBUG: Kullanıcı silme hatası: \(error.localizedDescription)")
+                        completion(.failure(error))
+                    } else {
+                        print("DEBUG: Kullanıcı ve tüm içeriği başarıyla silindi")
+                        completion(.success(()))
+                    }
                 }
             }
         }

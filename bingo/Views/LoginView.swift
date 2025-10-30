@@ -53,6 +53,13 @@ struct LoginView: View {
                         .padding(.top, 5)
                 }
                 
+                if !vm.infoMessage.isEmpty {
+                    Text(vm.infoMessage)
+                        .foregroundColor(.green)
+                        .bold()
+                        .padding(.top, 5)
+                }
+                
                 Button {
                     vm.login()
                 } label: {

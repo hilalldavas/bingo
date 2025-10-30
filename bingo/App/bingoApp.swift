@@ -32,6 +32,8 @@ struct bingoApp: App {
                     print("DEBUG: Email doğrulandı mı: \(user.isEmailVerified)")
                     if user.isEmailVerified {
                         authViewModel.isLoggedIn = true
+                        // Firestore'da profil var mı kontrol et
+                        authViewModel.validateUserProfile()
                     } else {
                         print("DEBUG: Email doğrulanmamış, giriş ekranına yönlendiriliyor")
                     }

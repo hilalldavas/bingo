@@ -72,6 +72,24 @@ class StorageService {
         uploadImage(data: imageData, to: storageRef, completion: completion)
     }
     
+    /// Story resmi yükler
+    /// - Parameters:
+    ///   - image: Yüklenecek UIImage
+    ///   - storyId: Story ID'si
+    ///   - userId: Kullanıcı ID'si
+    ///   - completion: Başarılı olursa resim URL'si, hata olursa Error döner
+    func uploadStoryImage(_ image: UIImage, storyId: String, userId: String, completion: @escaping (Result<String, Error>) -> Void) {
+        guard let imageData = image.jpegData(compressionQuality: 0.8) else {
+            completion(.failure(StorageError.imageCompressionFailed))
+            return
+        }
+        
+        let filename = "\(storyId)_\(Date().timeIntervalSince1970).jpg"
+        let storageRef = storage.reference().child("story_images/\(userId)/\(filename)")
+        
+        uploadImage(data: imageData, to: storageRef, completion: completion)
+    }
+    
     /// Resim siler
     /// - Parameters:
     ///   - imageURL: Silinecek resmin URL'si

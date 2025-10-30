@@ -12,8 +12,10 @@ struct UserProfileModel: Identifiable, Codable {
     var following: Int
     var posts: Int
     let timestamp: Date
+    var isDeactivated: Bool
+    var deactivatedAt: Date?
     
-    init(email: String, username: String, fullName: String, bio: String? = nil, profileImageURL: String? = nil, followers: Int = 0, following: Int = 0, posts: Int = 0) {
+    init(email: String, username: String, fullName: String, bio: String? = nil, profileImageURL: String? = nil, followers: Int = 0, following: Int = 0, posts: Int = 0, isDeactivated: Bool = false, deactivatedAt: Date? = nil) {
         self.id = nil
         self.email = email
         self.username = username
@@ -24,10 +26,12 @@ struct UserProfileModel: Identifiable, Codable {
         self.following = following
         self.posts = posts
         self.timestamp = Date()
+        self.isDeactivated = isDeactivated
+        self.deactivatedAt = deactivatedAt
     }
     
     func toDictionary() -> [String: Any] {
-        return [
+        var dict: [String: Any] = [
             "email": email,
             "username": username,
             "fullName": fullName,
@@ -36,8 +40,15 @@ struct UserProfileModel: Identifiable, Codable {
             "followers": followers,
             "following": following,
             "posts": posts,
-            "timestamp": Timestamp(date: timestamp)
+            "timestamp": Timestamp(date: timestamp),
+            "isDeactivated": isDeactivated
         ]
+        
+        if let deactivatedAt = deactivatedAt {
+            dict["deactivatedAt"] = Timestamp(date: deactivatedAt)
+        }
+        
+        return dict
     }
     
     static func from(dict: [String: Any], id: String) -> UserProfileModel? {
@@ -51,6 +62,9 @@ struct UserProfileModel: Identifiable, Codable {
             return nil
         }
         
+        let isDeactivated = dict["isDeactivated"] as? Bool ?? false
+        let deactivatedAt = (dict["deactivatedAt"] as? Timestamp)?.dateValue()
+        
         var profile = UserProfileModel(
             email: email,
             username: username,
@@ -59,7 +73,9 @@ struct UserProfileModel: Identifiable, Codable {
             profileImageURL: dict["profileImageURL"] as? String,
             followers: dict["followers"] as? Int ?? 0,
             following: dict["following"] as? Int ?? 0,
-            posts: dict["posts"] as? Int ?? 0
+            posts: dict["posts"] as? Int ?? 0,
+            isDeactivated: isDeactivated,
+            deactivatedAt: deactivatedAt
         )
         profile.id = id
         return profile
